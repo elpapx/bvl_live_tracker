@@ -1,303 +1,339 @@
-import yfinance as yf
+from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pathlib import Path
 import pandas as pd
-import logging
-import os
-import time
-import functools
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, List
+import logging
+from typing import List, Dict, Any, Optional
+import uvicorn
+import functools
+
+# Configuración de logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger("stocks-Backend")
+
+## Configuración de Empresas ##
+EMPRESA_CONFIGS = {
+    "BAP": {
+        "nombre": "CREDICORP LTD.",
+        "nombre_csv": "CREDICORP LTD.",
+        "archivo": "BAP_stockdata.csv",
+        "columnas": {
+            "nombre": "shortName",
+            "precio": "currentPrice",
+            "volumen": "volume",
+            "apertura": "open",
+            "minimo": "dayLow",
+            "maximo": "dayHigh",
+            "timestamp": "timestamp"
+        },
+        "estructura": "completa"
+    },
+    "BRK-B": {
+        "nombre": "Berkshire Hathaway",
+        "nombre_csv": "BERKSHIRE HATHAWAY INC.",  # Ajustar según CSV real
+        "archivo": "BRK_B_stockdata.csv",
+        "columnas": {
+            "nombre": "shortName",
+            "precio": "currentPrice",
+            "volumen": "volume",
+            "apertura": "open",
+            "minimo": "dayLow",
+            "maximo": "dayHigh",
+            "timestamp": "timestamp"
+        },
+        "estructura": "completa"
+    },
+    "ILF": {
+        "nombre": "iShares Latin America 40 ETF",
+        "nombre_csv": "ISHARES LATIN AMERICA 40 ETF",
+        "archivo": "ILF_stockdata.csv",
+        "columnas": {
+            "nombre": "shortName",
+            "precio": "open",
+            "volumen": "volume",
+            "timestamp": "timestamp"
+        },
+        "estructura": "basica"
+    }
+}
+
+# Rutas de datos actualizadas
+DATA_PATHS = [
+    Path(__file__).parent.parent / "scraper" / "data",  # Ruta relativa
+    Path(r"E:\papx\end_to_end_ml\nb_pr\bvl_live_tracker1\scraper\data"),  # Ruta exacta
+    Path(r"E:\papx\end_to_end_ml\nb_pr\tickets_live_tracker\scraper\data")  # Alternativa
+]
 
 
-# Configure logging
-def setup_logging() -> None:
-    """Set up logging configuration with file and console handlers."""
-    log_dir = "logs"
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
+def encontrar_archivo(nombre_archivo: str) -> Path:
+    """Busca archivos CSV considerando variaciones de nombre"""
+    # Lista de variaciones posibles del nombre de archivo
+    variaciones = [
+        nombre_archivo,
+        nombre_archivo.replace('-', '_'),
+        nombre_archivo.replace('_', '-')
+    ]
 
-    log_file = os.path.join(log_dir, "stock_data.log")
+    for ruta_base in DATA_PATHS:
+        for variacion in variaciones:
+            ruta = ruta_base / variacion
+            if ruta.exists():
+                logger.info(f"Archivo encontrado: {ruta}")
+                return ruta
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler()
-        ]
+    # Diagnóstico detallado
+    archivos_encontrados = []
+    for ruta_base in DATA_PATHS:
+        if ruta_base.exists():
+            archivos = list(ruta_base.glob('*stockdata.csv'))
+            archivos_encontrados.extend(archivos)
+
+    error_msg = (
+        f"No se encontró {nombre_archivo} (ni variaciones) en:\n"
+        f"{chr(10).join(str(p) for p in DATA_PATHS)}\n\n"
+        f"Archivos CSV encontrados en estas rutas:\n"
+        f"{chr(10).join(str(p) for p in archivos_encontrados)}"
     )
+    raise FileNotFoundError(error_msg)
 
 
-# Decorators
-def log_execution_time(func):
-    """Decorator to measure and log the execution time of a function."""
+class CargadorDatosEmpresa:
+    """Clase dedicada a cargar y manejar datos para una sola empresa"""
 
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        logger = logging.getLogger(__name__)
-        logger.info(f"Starting execution of {func.__name__}")
-        start_time = time.time()
+    def __init__(self, config: Dict[str, Any], codigo: str):
+        self.config = config
+        self.codigo = codigo
+        self.nombre = config["nombre"]
+        self.columnas = config["columnas"]
+        self.df = self._cargar_datos()
 
-        result = func(*args, **kwargs)
-
-        end_time = time.time()
-        execution_time = end_time - start_time
-        logger.info(f"Function {func.__name__} executed in {execution_time:.2f} seconds")
-
-        return result
-
-    return wrapper
-
-
-def handle_yf_errors(func):
-    """Decorator to catch and handle yfinance-related errors."""
-
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        logger = logging.getLogger(__name__)
+    def _cargar_datos(self) -> pd.DataFrame:
+        """Carga y valida los datos para una empresa específica"""
         try:
-            return func(*args, **kwargs)
+            ruta = encontrar_archivo(self.config["archivo"])
+            timestamp_col = self.config["columnas"]["timestamp"]
+            nombre_col = self.config["columnas"]["nombre"]
+
+            # Leer CSV con manejo robusto
+            df = pd.read_csv(ruta, encoding='utf-8-sig', low_memory=False)
+
+            # Verificar columnas requeridas
+            required_columns = {
+                self.config["columnas"]["nombre"],
+                self.config["columnas"]["precio"],
+                timestamp_col
+            }
+            missing = required_columns - set(df.columns)
+            if missing:
+                raise ValueError(f"Columnas faltantes en CSV: {missing}")
+
+            # Convertir timestamp (manejo flexible de formatos)
+            df[timestamp_col] = pd.to_datetime(df[timestamp_col], format='mixed', errors='coerce')
+            df = df[df[timestamp_col].notna()]
+
+            # Filtrar por nombre de empresa (búsqueda flexible)
+            nombre_buscado = self.config["nombre_csv"].upper()
+            df[nombre_col] = df[nombre_col].astype(str).str.strip().str.upper()
+
+            # Primero intenta coincidencia exacta
+            df_filtrado = df[df[nombre_col] == nombre_buscado]
+
+            # Si no hay resultados, intenta búsqueda parcial
+            if df_filtrado.empty:
+                df_filtrado = df[df[nombre_col].str.contains(nombre_buscado.split()[0], case=False, na=False)]
+
+            if df_filtrado.empty:
+                nombres_unicos = df[nombre_col].unique()
+                logger.warning(
+                    f"No se encontraron registros para '{nombre_buscado}'. "
+                    f"Nombres encontrados: {nombres_unicos}\n"
+                    f"Primeras filas del CSV:\n{df.head(2)}"
+                )
+                return pd.DataFrame()
+
+            # Ordenar por timestamp
+            df_filtrado = df_filtrado.sort_values(timestamp_col)
+
+            logger.info(f"Datos cargados para {self.codigo}: {len(df_filtrado)} registros válidos")
+            return df_filtrado
+
         except Exception as e:
-            logger.error(f"Error in {func.__name__}: {str(e)}")
-            logger.warning("Returning empty DataFrame due to error")
+            logger.error(f"Error cargando {self.config['archivo']}: {str(e)}", exc_info=True)
             return pd.DataFrame()
 
-    return wrapper
+    @functools.lru_cache(maxsize=8)
+    def get_historical(self, days: int = 30) -> pd.DataFrame:
+        """Obtiene datos históricos con caché"""
+        if self.df.empty or days <= 0:
+            return pd.DataFrame()
+
+        cutoff = datetime.now() - timedelta(days=days)
+        return self.df[self.df[self.columnas["timestamp"]] >= cutoff]
+
+    def get_realtime(self) -> Optional[Dict[str, Any]]:
+        """Obtiene los datos más recientes"""
+        if self.df.empty:
+            return None
+        return self._process_row(self.df.iloc[-1])
+
+    def _process_row(self, row: pd.Series) -> Dict[str, Any]:
+        """Convierte una fila del DataFrame a un diccionario"""
+        data = {
+            "precio": float(row[self.columnas["precio"]]),
+            "timestamp": row[self.columnas["timestamp"]].timestamp()
+        }
+
+        # Campos opcionales
+        optional_fields = {
+            "volumen": "volumen",
+            "apertura": "apertura",
+            "minimo": "minimo",
+            "maximo": "maximo"
+        }
+
+        for field, col_key in optional_fields.items():
+            if col_key in self.columnas and self.columnas[col_key] in row:
+                try:
+                    data[field] = float(row[self.columnas[col_key]])
+                except (ValueError, TypeError):
+                    data[field] = None
+
+        return data
 
 
-# Main functionality
-@handle_yf_errors
-@log_execution_time
-def fetch_stock_data(ticker: str) -> Optional[Dict[str, Any]]:
-    """
-    Fetch stock data from Yahoo Finance for the given ticker.
+## Sistema de enrutamiento modular ##
+def crear_router_empresa(cargador: CargadorDatosEmpresa) -> APIRouter:
+    """Crea un router FastAPI específico para una empresa"""
+    router = APIRouter(prefix=f"/{cargador.codigo}", tags=[cargador.nombre])
 
-    Args:
-        ticker: The stock ticker symbol
+    @router.get("/", summary=f"Datos para {cargador.nombre}")
+    async def get_datos(dias: int = 30):
+        if cargador.df.empty:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"Datos no disponibles para {cargador.nombre}. "
+                    f"Verifique que el archivo {cargador.config['archivo']} "
+                    f"contenga registros para '{cargador.config['nombre_csv']}'"
+                )
+            )
 
-    Returns:
-        Dictionary containing stock information or None if data retrieval fails
-    """
-    logger = logging.getLogger(__name__)
-    logger.info(f"Fetching data for ticker: {ticker}")
+        try:
+            historico = cargador.get_historical(dias)
+            if historico.empty:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No hay datos para {cargador.nombre} en los últimos {dias} días"
+                )
 
-    stock = yf.Ticker(ticker)
-    data = stock.info
+            realtime = cargador.get_realtime()
+            if not realtime:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No se encontraron datos recientes para {cargador.nombre}"
+                )
 
-    if not data:
-        logger.warning(f"No data retrieved for ticker: {ticker}")
-        return None
+            historical_data = [
+                cargador._process_row(row)
+                for _, row in historico.iterrows()
+            ]
 
-    # Add timestamp to the data
-    data['timestamp'] = datetime.now().isoformat()
+            return {
+                "empresa": cargador.codigo,
+                "nombre": cargador.nombre,
+                "tiempo_real": realtime,
+                "historico": historical_data,
+                "metadata": {
+                    "dias": dias,
+                    "puntos_datos": len(historical_data),
+                    "estructura": cargador.config["estructura"],
+                    "archivo_origen": cargador.config["archivo"],
+                    "nombre_en_csv": cargador.config["nombre_csv"],
+                    "ultima_actualizacion": datetime.now().isoformat()
+                }
+            }
+        except Exception as e:
+            logger.error(f"Error procesando {cargador.codigo}: {str(e)}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error al procesar datos: {str(e)}"
+            )
 
-    logger.info(f"Successfully retrieved data for ticker: {ticker}")
-    return data
+    return router
 
 
-def convert_to_dataframe(data: Optional[Dict[str, Any]]) -> pd.DataFrame:
-    """
-    Convert stock data dictionary to a pandas DataFrame.
+## Aplicación principal ##
+app = FastAPI(title="API de Acciones BVL", version="2.3")
 
-    Args:
-        data: Dictionary containing stock information
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
 
-    Returns:
-        DataFrame containing the stock data
-    """
-    logger = logging.getLogger(__name__)
-
-    if data is None:
-        logger.warning("No data to convert to DataFrame")
-        return pd.DataFrame()
-
+# Cargadores y routers para cada empresa
+cargadores = {}
+for codigo, config in EMPRESA_CONFIGS.items():
     try:
-        df = pd.DataFrame([data])
-        logger.info("Successfully converted data to DataFrame")
-        return df
+        cargador = CargadorDatosEmpresa(config, codigo)
+        cargadores[codigo] = cargador
+        router = crear_router_empresa(cargador)
+        app.include_router(router)
+        logger.info(f"API creada para {codigo} - {config['nombre']} (Registros: {len(cargador.df)})")
     except Exception as e:
-        logger.error(f"Error converting data to DataFrame: {str(e)}")
-        return pd.DataFrame()
+        logger.error(f"Error inicializando {codigo}: {str(e)}", exc_info=True)
+        # Crear cargador vacío como fallback
+        cargadores[codigo] = type('EmptyLoader', (), {
+            'df': pd.DataFrame(),
+            'get_historical': lambda days=30: pd.DataFrame(),
+            'get_realtime': lambda: None,
+            'nombre': config['nombre'],
+            'codigo': codigo,
+            'config': config
+        })()
 
 
-def save_to_csv(df: pd.DataFrame, ticker: str, mode: str = 'a') -> bool:
-    """
-    Save DataFrame to CSV file.
-
-    Args:
-        df: DataFrame to save
-        ticker: Ticker symbol for filename generation
-        mode: File write mode ('w' for write, 'a' for append)
-
-    Returns:
-        Boolean indicating success or failure
-    """
-    logger = logging.getLogger(__name__)
-
-    if df.empty:
-        logger.warning(f"Empty DataFrame for {ticker}, nothing to save")
-        return False
-
-    # Replace dots in ticker with underscores for filename
-    safe_ticker = ticker.replace('.', '_')
-    csv_filename = f"{safe_ticker}_stockdata.csv"
-
-    try:
-        # Create data directory if it doesn't exist
-        data_dir = "data"
-        if not os.path.exists(data_dir):
-            os.makedirs(data_dir)
-
-        file_path = os.path.join(data_dir, csv_filename)
-
-        # Check if file exists to determine if we need to write headers
-        header = not os.path.exists(file_path) or mode == 'w'
-
-        df.to_csv(file_path, mode=mode, header=header, index=False)
-        logger.info(f"Data successfully saved to {file_path} (mode: {mode})")
-        return True
-    except Exception as e:
-        logger.error(f"Error saving data to CSV for {ticker}: {str(e)}")
-        return False
+# Endpoints globales
+@app.get("/health", summary="Estado del sistema")
+async def health_check():
+    return {
+        "status": "running",
+        "timestamp": datetime.now().isoformat(),
+        "empresas": [
+            {
+                "codigo": codigo,
+                "nombre": cargador.nombre,
+                "disponible": not cargador.df.empty,
+                "registros": len(cargador.df),
+                "ruta": f"/{codigo}",
+                "archivo": cargador.config["archivo"],
+                "nombre_buscado": cargador.config["nombre_csv"]
+            }
+            for codigo, cargador in cargadores.items()
+        ]
+    }
 
 
-def process_ticker(ticker: str) -> bool:
-    """
-    Process a single ticker: fetch data, convert to DataFrame, and save to CSV.
-
-    Args:
-        ticker: Stock ticker symbol
-
-    Returns:
-        Boolean indicating success or failure
-    """
-    logger = logging.getLogger(__name__)
-    logger.info(f"Processing ticker: {ticker}")
-
-    # Fetch data
-    data = fetch_stock_data(ticker)
-
-    # Convert to DataFrame
-    df = convert_to_dataframe(data)
-
-    # Save to CSV (append mode)
-    if not df.empty:
-        success = save_to_csv(df, ticker, mode='a')
-        if success:
-            logger.info(f"Data for {ticker} has been successfully processed and appended")
-            return True
-        else:
-            logger.error(f"Failed to save data for {ticker}")
-            return False
-    else:
-        logger.warning(f"No data to save for {ticker}")
-        return False
-
-
-@log_execution_time
-def process_multiple_tickers(tickers: List[str]) -> Dict[str, bool]:
-    """
-    Process multiple ticker symbols, fetching and saving data for each.
-
-    Args:
-        tickers: List of stock ticker symbols
-
-    Returns:
-        Dictionary mapping tickers to their processing success status
-    """
-    logger = logging.getLogger(__name__)
-    logger.info(f"Starting batch processing for {len(tickers)} tickers: {', '.join(tickers)}")
-
-    results = {}
-
-    for ticker in tickers:
-        success = process_ticker(ticker)
-        results[ticker] = success
-
-    # Log summary
-    successful = sum(1 for status in results.values() if status)
-    logger.info(f"Batch processing complete. Successfully processed {successful}/{len(tickers)} tickers")
-
-    return results
-
-
-def limited_time_fetch(tickers: List[str], interval_minutes: int = 10, total_hours: int = 7) -> None:
-    """
-    Fetch stock data at specified intervals for a limited time duration.
-
-    Args:
-        tickers: List of stock ticker symbols
-        interval_minutes: Time between fetches in minutes
-        total_hours: Total duration to run in hours
-    """
-    logger = logging.getLogger(__name__)
-    interval_seconds = interval_minutes * 60
-    total_seconds = total_hours * 3600
-    start_time = datetime.now()
-    end_time = start_time + timedelta(hours=total_hours)
-
-    logger.info(f"Starting limited time fetch at {start_time}")
-    logger.info(f"Will run until {end_time} (total duration: {total_hours} hours)")
-    logger.info(f"Fetch interval: {interval_minutes} minutes")
-
-    cycle_count = 0
-    max_cycles = total_seconds // interval_seconds
-
-    try:
-        while datetime.now() < end_time:
-            cycle_count += 1
-            remaining_time = end_time - datetime.now()
-
-            logger.info(f"\nStarting fetch cycle {cycle_count}/{max_cycles}")
-            logger.info(f"Remaining time: {remaining_time}")
-
-            # Process all tickers
-            results = process_multiple_tickers(tickers)
-
-            # Print summary to console
-            print("\nProcessing Summary:")
-            print("------------------")
-            for ticker, success in results.items():
-                status = "Success" if success else "Failed"
-                print(f"{ticker}: {status}")
-            print(f"\nCycle {cycle_count} of {max_cycles} completed")
-            print(f"Next fetch at: {datetime.now() + timedelta(seconds=interval_seconds)}")
-            print(f"Will stop at: {end_time}")
-
-            # Wait for next cycle (but check periodically to avoid overshooting end time)
-            if cycle_count < max_cycles:
-                sleep_until = datetime.now() + timedelta(seconds=interval_seconds)
-                while datetime.now() < sleep_until and datetime.now() < end_time:
-                    time.sleep(min(10, (sleep_until - datetime.now()).total_seconds()))
-
-    except KeyboardInterrupt:
-        logger.info("Fetch process interrupted by user. Exiting...")
-    except Exception as e:
-        logger.error(f"Unexpected error in fetch process: {str(e)}")
-    finally:
-        logger.info(f"Completed {cycle_count} fetch cycles in total")
-        logger.info(f"Final data saved for all tickers")
-
-
-def main(tickers: List[str]) -> None:
-    """
-    Main function to orchestrate the stock data retrieval and saving process for multiple tickers.
-
-    Args:
-        tickers: List of stock ticker symbols
-    """
-    # Set up logging
-    setup_logging()
-
-    logger = logging.getLogger(__name__)
-    logger.info(f"Starting limited-time stock data retrieval process for {len(tickers)} tickers")
-
-    # Start limited time fetch (10 minute intervals for 7 hours)
-    limited_time_fetch(tickers, interval_minutes=10, total_hours=7)
+@app.get("/empresas", summary="Lista de empresas disponibles")
+async def listar_empresas():
+    return [
+        {
+            "codigo": codigo,
+            "nombre": config["nombre"],
+            "estructura": config["estructura"],
+            "ruta": f"/{codigo}",
+            "archivo": config["archivo"],
+            "nombre_en_csv": config["nombre_csv"],
+            "datos_disponibles": not cargadores[codigo].df.empty
+        }
+        for codigo, config in EMPRESA_CONFIGS.items()
+    ]
 
 
 if __name__ == "__main__":
-    # Define tickers
-    ticker_symbols = ["BAP", "ILF", "BRK-B"]  # Note: Yahoo Finance uses hyphen for BRK.B
-
-    # Run main process
-    main(ticker_symbols)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
