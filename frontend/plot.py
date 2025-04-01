@@ -1,336 +1,117 @@
-import requests
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import StreamingResponse
+from typing import List, Optional
+from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-from datetime import datetime
-import numpy as np
-import argparse
-import sys
-from typing import Dict, List, Any, Optional
+import io
+import uvicorn
+
+app = FastAPI(title="Stock API", version="1.0")
 
 
-class BVLStockPlotter:
-    """Clase para visualizar datos de acciones desde la API de BVL"""
+class StockPriceExtractor:
+    """Extrae datos de precios de acciones desde archivos CSV"""
 
-    def __init__(self, base_url: str = "http://localhost:8000"):
-        """Inicializa el plotter con la URL base de la API"""
-        self.base_url = base_url
-        self.empresas = self._fetch_empresas()
+    def __init__(self, symbols=None):
+        self.data_dir = self._get_data_directory()
+        self.csv_files = self.get_csv_files()
+        self.symbols = symbols if symbols else None
 
-        # Configuración de estilos para matplotlib
-        plt.style.use('seaborn-v0_8-darkgrid')
-        self.colors = {
-            "BAP": "#1f77b4",  # Azul
-            "BRK-B": "#ff7f0e",  # Naranja
-            "ILF": "#2ca02c"  # Verde
-        }
+    def _get_data_directory(self):
+        current_dir = Path(__file__).resolve().parent
+        data_dir = current_dir / "data"
+        if not data_dir.exists():
+            raise FileNotFoundError(f"No se encontró la carpeta 'data' en: {data_dir}")
+        return data_dir
 
-    def _fetch_empresas(self) -> List[Dict[str, Any]]:
-        """Obtiene la lista de empresas disponibles"""
-        try:
-            response = requests.get(f"{self.base_url}/empresas")
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as e:
-            print(f"Error obteniendo lista de empresas: {e}")
-            return []
+    def get_csv_files(self):
+        return list(self.data_dir.glob("*.csv"))
 
-    def get_empresa_names(self) -> List[str]:
-        """Retorna los códigos de las empresas disponibles"""
-        return [empresa["codigo"] for empresa in self.empresas]
+    def get_latest_price(self):
+        latest_prices = {}
+        for file in self.csv_files:
+            try:
+                df = pd.read_csv(file, usecols=['symbol', 'timestamp', 'currentPrice'], parse_dates=['timestamp'])
+                if self.symbols:
+                    df = df[df['symbol'].isin(self.symbols)]
+                latest_prices.update(df[['currentPrice']].to_dict()['currentPrice'])
+            except Exception as e:
+                print(f"Error procesando {file.name}: {e}")
+        return latest_prices
 
-    def fetch_data(self, codigo: str, dias: int = 30) -> Optional[Dict[str, Any]]:
-        """Obtiene datos para una empresa específica"""
-        try:
-            response = requests.get(f"{self.base_url}/{codigo}", params={"dias": dias})
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as e:
-            print(f"Error obteniendo datos para {codigo}: {e}")
-            if hasattr(e.response, 'text'):
-                print(f"Respuesta: {e.response.text}")
-            return None
+    def get_all_prices(self):
+        all_data = []
+        for file in self.csv_files:
+            try:
+                df = pd.read_csv(file, usecols=['symbol', 'timestamp', 'currentPrice'], parse_dates=['timestamp'])
+                if self.symbols:
+                    df = df[df['symbol'].isin(self.symbols)]
+                all_data.append(df)
+            except Exception as e:
+                print(f"Error procesando {file.name}: {e}")
+        if all_data:
+            return pd.concat(all_data, ignore_index=True)
+        return pd.DataFrame(columns=['symbol', 'timestamp', 'currentPrice'])
 
-    def prepare_dataframe(self, data: Dict[str, Any]) -> pd.DataFrame:
-        """Convierte los datos de la API en un DataFrame para graficar"""
-        if not data or "historico" not in data or not data["historico"]:
-            return pd.DataFrame()
 
-        df = pd.DataFrame(data["historico"])
+@app.get("/plot-prices/")
+def plot_prices(
+        symbols: List[str] = Query(["BAP", "ILF", "BRK-B"], description="Símbolos a graficar"),
+        days: int = Query(30, description="Número de días a visualizar")
+):
+    """
+    Genera gráficos del 'currentPrice' para cada símbolo solicitado.
+    """
+    try:
+        # Obtener datos
+        extractor = StockPriceExtractor(symbols=symbols)
+        all_data = extractor.get_all_prices()
 
-        # Convertir timestamp a datetime
-        df["fecha"] = pd.to_datetime(df["timestamp"], unit='s')
+        if all_data.empty:
+            raise HTTPException(status_code=404, detail="No se encontraron datos para los símbolos especificados")
 
-        # Ordenar por fecha
-        df = df.sort_values("fecha")
+        # Filtrar por días
+        min_date = pd.Timestamp.now() - pd.Timedelta(days=days)
+        filtered_data = all_data[all_data['timestamp'] >= min_date]
 
-        return df
+        if filtered_data.empty:
+            raise HTTPException(status_code=404, detail=f"No hay datos en los últimos {days} días")
 
-    def plot_precio(self, codigo: str, dias: int = 30, save_path: Optional[str] = None):
-        """Genera un gráfico de precios para una empresa"""
-        data = self.fetch_data(codigo, dias)
-        if not data:
-            print(f"No se pudieron obtener datos para {codigo}")
-            return
+        # Generar gráficos
+        plt.style.use('seaborn')
+        figures = {}
 
-        df = self.prepare_dataframe(data)
-        if df.empty:
-            print(f"No hay datos históricos para {codigo}")
-            return
-
-        fig, ax = plt.subplots(figsize=(12, 6))
-
-        # Gráfico de precio
-        ax.plot(df["fecha"], df["precio"],
-                color=self.colors.get(codigo, "blue"),
-                linewidth=2,
-                label=f"Precio ({data['nombre']})")
-
-        # Añadir punto para el valor actual
-        ultimo_precio = df["precio"].iloc[-1]
-        ax.scatter(df["fecha"].iloc[-1], ultimo_precio,
-                   color='red', s=80, zorder=5)
-
-        # Añadir texto con el último precio
-        ax.annotate(f"${ultimo_precio:.2f}",
-                    (df["fecha"].iloc[-1], ultimo_precio),
-                    xytext=(10, 10), textcoords='offset points',
-                    fontsize=12, fontweight='bold')
-
-        # Configuración del eje X
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%d-%m-%Y'))
-        plt.xticks(rotation=45)
-
-        # Añadir cuadrícula
-        ax.grid(True, linestyle='--', alpha=0.7)
-
-        # Añadir título y etiquetas
-        ax.set_title(f"Evolución del Precio - {data['nombre']} ({codigo})", fontsize=16)
-        ax.set_xlabel("Fecha", fontsize=12)
-        ax.set_ylabel("Precio ($)", fontsize=12)
-
-        # Añadir metadatos
-        ax.text(0.01, 0.01,
-                f"Periodo: Últimos {dias} días\nPrecio actual: ${ultimo_precio:.2f}\nFecha actualización: {data['metadata']['ultima_actualizacion'][:10]}",
-                transform=ax.transAxes, fontsize=10,
-                bbox=dict(facecolor='white', alpha=0.8))
-
-        plt.tight_layout()
-
-        if save_path:
-            plt.savefig(save_path)
-            print(f"Gráfico guardado en {save_path}")
-        else:
-            plt.show()
-
-        plt.close()
-
-    def plot_comparacion(self, codigos: List[str], dias: int = 30, metrica: str = "precio",
-                         save_path: Optional[str] = None):
-        """Genera un gráfico comparativo entre varias empresas"""
-        if not codigos:
-            print("Debe especificar al menos un código de empresa")
-            return
-
-        fig, ax = plt.subplots(figsize=(14, 7))
-
-        # Para normalizar los valores
-        normalizar = len(codigos) > 1
-
-        for codigo in codigos:
-            data = self.fetch_data(codigo, dias)
-            if not data:
-                print(f"No se pudieron obtener datos para {codigo}")
+        for symbol in symbols:
+            symbol_data = filtered_data[filtered_data['symbol'] == symbol]
+            if symbol_data.empty:
                 continue
 
-            df = self.prepare_dataframe(data)
-            if df.empty:
-                print(f"No hay datos históricos para {codigo}")
-                continue
+            plt.figure(figsize=(10, 5))
+            plt.plot(symbol_data['timestamp'], symbol_data['currentPrice'], 'b-', linewidth=2)
+            plt.title(f"Evolución de Precio: {symbol}")
+            plt.xlabel("Fecha")
+            plt.ylabel("Precio (USD)")
+            plt.grid(True)
 
-            if metrica not in df.columns:
-                print(f"La métrica '{metrica}' no está disponible para {codigo}")
-                continue
+            # Guardar imagen en buffer
+            buffer = io.BytesIO()
+            plt.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
+            buffer.seek(0)
+            figures[symbol] = buffer
+            plt.close()
 
-            # Normalizar valores si se comparan múltiples empresas
-            valores = df[metrica]
-            if normalizar:
-                valores = (valores / valores.iloc[0]) * 100
+        if not figures:
+            raise HTTPException(status_code=404, detail="No se pudo generar ningún gráfico")
 
-            # Graficar
-            ax.plot(df["fecha"], valores,
-                    color=self.colors.get(codigo, None),
-                    linewidth=2,
-                    label=f"{data['nombre']} ({codigo})")
+        # Devolver el primer gráfico (puedes modificar para devolver múltiples)
+        return StreamingResponse(figures[symbols[0]], media_type="image/png")
 
-            # Añadir punto para el último valor
-            ultimo_valor = valores.iloc[-1]
-            ax.scatter(df["fecha"].iloc[-1], ultimo_valor,
-                       color=self.colors.get(codigo, None), s=80, zorder=5)
-
-        # Configuración del eje X
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%d-%m-%Y'))
-        plt.xticks(rotation=45)
-
-        # Añadir leyenda
-        ax.legend(loc='best')
-
-        # Añadir título y etiquetas
-        if normalizar:
-            ax.set_title(f"Comparación de {metrica.capitalize()} (Base 100)", fontsize=16)
-            ax.set_ylabel(f"{metrica.capitalize()} normalizado (%)", fontsize=12)
-        else:
-            ax.set_title(f"Comparación de {metrica.capitalize()}", fontsize=16)
-            ax.set_ylabel(f"{metrica.capitalize()}", fontsize=12)
-
-        ax.set_xlabel("Fecha", fontsize=12)
-
-        # Añadir cuadrícula
-        ax.grid(True, linestyle='--', alpha=0.7)
-
-        plt.tight_layout()
-
-        if save_path:
-            plt.savefig(save_path)
-            print(f"Gráfico guardado en {save_path}")
-        else:
-            plt.show()
-
-        plt.close()
-
-    def plot_dashboard(self, codigos: List[str], dias: int = 30, save_path: Optional[str] = None):
-        """Genera un dashboard completo con múltiples gráficos"""
-        if not codigos:
-            codigos = self.get_empresa_names()
-
-        # Determinar layout según cantidad de empresas
-        n_empresas = len(codigos)
-        if n_empresas <= 2:
-            rows, cols = 1, n_empresas
-        else:
-            rows, cols = (n_empresas + 1) // 2, 2
-
-        # Crear figura y subplots
-        fig = plt.figure(figsize=(15, 5 * rows))
-        fig.suptitle("Dashboard de Acciones BVL", fontsize=20, y=0.98)
-
-        # Crear una comparativa en la parte superior
-        ax_comp = plt.subplot2grid((rows + 1, cols), (0, 0), colspan=cols)
-
-        # Obtener datos y graficar comparativa
-        for codigo in codigos:
-            data = self.fetch_data(codigo, dias)
-            if not data:
-                continue
-
-            df = self.prepare_dataframe(data)
-            if df.empty:
-                continue
-
-            # Normalizar para comparar
-            normalized = (df["precio"] / df["precio"].iloc[0]) * 100
-
-            # Graficar línea normalizada
-            ax_comp.plot(df["fecha"], normalized,
-                         color=self.colors.get(codigo, None),
-                         linewidth=2,
-                         label=f"{data['nombre']} ({codigo})")
-
-        ax_comp.set_title("Comparación de Rendimiento (Base 100)", fontsize=14)
-        ax_comp.set_ylabel("Precio Normalizado (%)", fontsize=12)
-        ax_comp.xaxis.set_major_formatter(mdates.DateFormatter('%d-%m-%Y'))
-        ax_comp.tick_params(axis='x', rotation=45)
-        ax_comp.legend()
-        ax_comp.grid(True, linestyle='--', alpha=0.7)
-
-        # Graficar cada empresa individual
-        for i, codigo in enumerate(codigos):
-            row = (i // cols) + 1  # +1 porque la primera fila es la comparativa
-            col = i % cols
-
-            # Crear subplot
-            ax = plt.subplot2grid((rows + 1, cols), (row, col))
-
-            data = self.fetch_data(codigo, dias)
-            if not data:
-                ax.text(0.5, 0.5, f"No hay datos para {codigo}",
-                        ha='center', va='center', fontsize=12)
-                continue
-
-            df = self.prepare_dataframe(data)
-            if df.empty:
-                ax.text(0.5, 0.5, f"No hay datos históricos para {codigo}",
-                        ha='center', va='center', fontsize=12)
-                continue
-
-            # Graficar precio
-            ax.plot(df["fecha"], df["precio"],
-                    color=self.colors.get(codigo, "blue"),
-                    linewidth=2)
-
-            # Añadir punto para el valor actual
-            ultimo_precio = df["precio"].iloc[-1]
-            ax.scatter(df["fecha"].iloc[-1], ultimo_precio,
-                       color='red', s=50, zorder=5)
-
-            # Añadir etiqueta con último precio
-            ax.annotate(f"${ultimo_precio:.2f}",
-                        (df["fecha"].iloc[-1], ultimo_precio),
-                        xytext=(5, 5), textcoords='offset points',
-                        fontsize=10, fontweight='bold')
-
-            # Configurar eje X
-            ax.xaxis.set_major_formatter(mdates.DateFormatter('%d-%m-%Y'))
-            ax.tick_params(axis='x', rotation=45)
-
-            # Añadir título
-            ax.set_title(f"{data['nombre']} ({codigo})", fontsize=12)
-
-            # Añadir cuadrícula
-            ax.grid(True, linestyle='--', alpha=0.7)
-
-        plt.tight_layout()
-        plt.subplots_adjust(top=0.93)
-
-        if save_path:
-            plt.savefig(save_path)
-            print(f"Dashboard guardado en {save_path}")
-        else:
-            plt.show()
-
-        plt.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-def main():
-    """Función principal para ejecutar el plotter desde línea de comandos"""
-    parser = argparse.ArgumentParser(description="Visualizador de datos BVL")
-    parser.add_argument("--url", default="http://localhost:8000", help="URL base de la API")
-    parser.add_argument("--empresas", nargs="+", help="Códigos de empresas a graficar")
-    parser.add_argument("--dias", type=int, default=30, help="Días de histórico")
-    parser.add_argument("--tipo", choices=["precio", "comparacion", "dashboard"],
-                        default="dashboard", help="Tipo de gráfico")
-    parser.add_argument("--guardar", help="Ruta para guardar el gráfico")
-    parser.add_argument("--metrica", default="precio",
-                        help="Métrica a comparar (precio, volumen, etc.)")
-
-    args = parser.parse_args()
-
-    plotter = BVLStockPlotter(args.url)
-
-    # Si no se especifican empresas, usar todas las disponibles
-    if not args.empresas:
-        args.empresas = plotter.get_empresa_names()
-        print(f"Usando todas las empresas disponibles: {', '.join(args.empresas)}")
-
-    if args.tipo == "precio" and len(args.empresas) == 1:
-        plotter.plot_precio(args.empresas[0], args.dias, args.guardar)
-    elif args.tipo == "comparacion":
-        plotter.plot_comparacion(args.empresas, args.dias, args.metrica, args.guardar)
-    elif args.tipo == "dashboard":
-        plotter.plot_dashboard(args.empresas, args.dias, args.guardar)
-    else:
-        print("Opción no válida o incompatible con la cantidad de empresas")
-
+# ... (otros endpoints que ya tenías)
 
 if __name__ == "__main__":
-    main()
+    uvicorn.run(app, host="0.0.0.0", port=8000)
