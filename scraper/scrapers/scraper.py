@@ -64,7 +64,7 @@ EMPRESA_CONFIGS = {
 # Rutas de datos actualizadas
 DATA_PATHS = [
     Path(__file__).parent.parent / "scraper" / "data",  # Ruta relativa
-    Path(r"E:\papx\end_to_end_ml\nb_pr\bvl_live_tracker1\scraper\data"),  # Ruta exacta
+    Path(r"/scraper/data"),  # Ruta exacta
     Path(r"E:\papx\end_to_end_ml\nb_pr\tickets_live_tracker\scraper\data")  # Alternativa
 ]
 
