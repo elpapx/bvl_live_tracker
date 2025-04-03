@@ -1,435 +1,468 @@
-from fastapi import FastAPI, HTTPException, Depends
-import pandas as pd
-from pathlib import Path
-from typing import List, Optional, Dict, Any
-import time
 import os
-import threading
-import asyncio
+import pandas as pd
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from typing import Dict, List, Optional, Tuple
 import logging
-from contextlib import asynccontextmanager
-import plotly.graph_objs as go
-from fastapi.responses import HTMLResponse, FileResponse
-from io import BytesIO
+from datetime import datetime
+import time
+import threading
+import json
+from pydantic import BaseModel
 
-# Configuración avanzada de logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("api_service.log", encoding='utf-8')
-    ]
-)
+# Configuración de logging
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Configuración portable multiplataforma
-BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BASE_DIR / "data"
-LOG_DIR = BASE_DIR / "logs"
 
-# Crear directorios necesarios con permisos adecuados
-os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(LOG_DIR, exist_ok=True)
-
-# Cache con bloqueo para concurrencia
-data_cache: Dict[str, tuple] = {}
-cache_lock = threading.Lock()
-CACHE_TIMEOUT = 300
-
-# Cache para gráficos
-CHART_CACHE = {}
-CHART_CACHE_TIMEOUT = 600  # 10 minutos
-
-# Columnas prioritarias según especificación
-PRIORITY_COLUMNS = [
-    'currentPrice', 'previousClose', 'open',
-    'dayLow', 'dividendYield', 'financialCurrency',
-    'volumen', 'symbol', 'timestamp'
-]
+# Modelo para la respuesta
+class StockData(BaseModel):
+    symbol: str
+    currentPrice: float
+    previousClose: float
+    open: float
+    dayLow: float
+    dayHigh: float
+    dividendYield: Optional[float] = None
+    financialCurrency: str
+    volumen: Optional[int] = None
+    timestamp: str
 
 
-def detect_priority_columns(df: pd.DataFrame) -> Dict[str, str]:
-    """Detecta y mapea columnas prioritarias respetando nombres originales"""
-    column_map = {}
-    df_columns = df.columns.str.strip()
+# Creación de la aplicación FastAPI
+app = FastAPI(title="BVL Live Tracker API",
+              description="API para consultar datos de acciones en tiempo real",
+              version="1.0.0")
 
-    # Buscar coincidencias exactas primero
-    for target_col in PRIORITY_COLUMNS:
-        if target_col in df_columns:
-            column_map[target_col] = target_col
-            logger.debug(f"Columna prioritaria detectada: {target_col}")
-
-    # Búsqueda case-insensitive para columnas restantes
-    remaining_cols = [col for col in PRIORITY_COLUMNS if col not in column_map]
-    for target_col in remaining_cols:
-        matches = [col for col in df_columns if col.lower() == target_col.lower()]
-        if matches:
-            column_map[target_col] = matches[0]
-            logger.debug(f"Mapeo case-insensitive: {target_col} -> {matches[0]}")
-
-    # Validar columnas críticas
-    required_cols = ['timestamp', 'symbol']
-    for col in required_cols:
-        if col not in column_map:
-            logger.error(f"Columna requerida faltante: {col}")
-            raise ValueError(f"Columna {col} no encontrada en datos")
-
-    logger.info(f"Mapeo de columnas completado: {column_map}")
-    return column_map
-
-
-def load_stock_data(symbol: str) -> Optional[pd.DataFrame]:
-    """Carga y normaliza datos manteniendo nombres originales de columnas"""
-    symbol = symbol.upper()
-    cache_key = f"{symbol}_data"
-
-    with cache_lock:
-        if cache_key in data_cache:
-            cached_data, timestamp = data_cache[cache_key]
-            if (time.time() - timestamp) < CACHE_TIMEOUT:
-                logger.debug(f"Cache hit para {symbol}")
-                return cached_data.copy()
-
-    file_patterns = [f"{symbol}_*.csv", f"{symbol}.csv"]
-    found_files = []
-    for pattern in file_patterns:
-        found_files.extend(DATA_DIR.glob(pattern))
-        if found_files:
-            break
-
-    if not found_files:
-        logger.warning(f"Archivo no encontrado para {symbol}")
-        return None
-
-    try:
-        file_path = found_files[0]
-        logger.info(f"Cargando {symbol} desde {file_path.name}")
-
-        df = pd.read_csv(file_path)
-        df = df.rename(columns=lambda x: x.strip())
-
-        # Normalización de tipos de datos
-        numeric_cols = ['currentPrice', 'previousClose', 'open', 'dayLow', 'volumen']
-        for col in numeric_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-
-        if 'timestamp' in df.columns:
-            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
-
-        # Aplicar mapeo de columnas prioritarias
-        column_map = detect_priority_columns(df)
-        df = df.rename(columns={v: k for k, v in column_map.items()})
-        df = df[[col for col in PRIORITY_COLUMNS if col in df.columns]]
-
-        # Cache con control de errores
-        try:
-            with cache_lock:
-                data_cache[cache_key] = (df.copy(), time.time())
-        except Exception as cache_error:
-            logger.error(f"Error actualizando cache: {str(cache_error)}")
-
-        return df
-
-    except Exception as e:
-        logger.error(f"Error cargando {symbol}: {str(e)}", exc_info=True)
-        return None
-
-
-def generate_price_chart(df: pd.DataFrame, symbol: str, chart_type: str = 'line') -> go.Figure:
-    """Genera un gráfico interactivo con estilo oscuro"""
-    df = df.sort_values('timestamp', ascending=True)
-
-    # Configuración de colores
-    dark_theme = {
-        'background': '#111111',
-        'text': '#FFFFFF',
-        'grid': '#2E2E2E',
-        'line': '#00FF88',
-        'marker': '#FFAA00'
-    }
-
-    # Crear traza según el tipo de gráfico
-    if chart_type == 'candlestick' and all(col in df.columns for col in ['open', 'high', 'low', 'close']):
-        trace = go.Candlestick(
-            x=df['timestamp'],
-            open=df['open'],
-            high=df['high'],
-            low=df['low'],
-            close=df['close'],
-            increasing_line_color='#2ECC71',
-            decreasing_line_color='#E74C3C',
-            name='Velas'
-        )
-    else:
-        trace = go.Scatter(
-            x=df['timestamp'],
-            y=df['currentPrice'],
-            mode='lines+markers',
-            name='Precio',
-            line=dict(color=dark_theme['line'], width=2),
-            marker=dict(size=6, color=dark_theme['marker']),
-            hovertemplate='<b>%{x|%Y-%m-%d}</b><br>$%{y:.2f}<extra></extra>'
-        )
-
-    # Configurar layout oscuro
-    layout = go.Layout(
-        title=dict(
-            text=f'Histórico de Precios - {symbol}',
-            font=dict(color=dark_theme['text'])
-        ),
-        xaxis=dict(
-            title='Fecha',
-            gridcolor=dark_theme['grid'],
-            rangeslider=dict(visible=True),
-            color=dark_theme['text']
-        ),
-        yaxis=dict(
-            title='Precio (USD)',
-            gridcolor=dark_theme['grid'],
-            tickprefix='$',
-            color=dark_theme['text']
-        ),
-        plot_bgcolor=dark_theme['background'],
-        paper_bgcolor=dark_theme['background'],
-        font=dict(color=dark_theme['text']),
-        hovermode='x unified',
-        height=600
-    )
-
-    return go.Figure(data=[trace], layout=layout)
-
-# Modificar la función lifespan de esta manera:
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Manejador del ciclo de vida corregido"""
-    logger.info("Iniciando API - Validando entorno...")
-
-    # Verificar permisos de escritura en logs
-    try:
-        with open(LOG_DIR / "startup_test.log", "w") as f:
-            f.write("Test de permisos\n")
-        os.remove(LOG_DIR / "startup_test.log")
-    except Exception as e:
-        logger.critical(f"Error de permisos en directorio de logs: {str(e)}")
-        raise
-
-    # Precarga inicial en segundo plano
-    async def preload_essentials():
-        """Precarga corregida usando list_available_symbols"""
-        try:
-            logger.info("Iniciando precarga de datos esenciales...")
-
-            if not DATA_DIR.exists():
-                logger.warning(f"Directorio de datos no encontrado: {DATA_DIR}")
-                return
-
-            # Obtener símbolos usando el endpoint
-            symbols_response = await list_available_symbols()
-            symbols = [s['symbol'] for s in symbols_response.get('symbols', [])[:3]]
-
-            if not symbols:
-                logger.warning("No se encontraron símbolos para precargar")
-                return
-
-            logger.info(f"Precargando datos para: {symbols}")
-
-            # Precarga síncrona (load_stock_data no es async)
-            for symbol in symbols:
-                try:
-                    df = load_stock_data(symbol)
-                    if df is not None:
-                        logger.debug(f"Precargado {symbol}: {len(df)} registros")
-                except Exception as e:
-                    logger.error(f"Error precargando {symbol}: {str(e)}", exc_info=True)
-
-            logger.info("Precarga completada")
-
-        except Exception as e:
-            logger.critical(f"Error crítico en precarga: {str(e)}", exc_info=True)
-
-    # Ejecutar la precarga como tarea
-    asyncio.create_task(preload_essentials())
-
-    yield  # La aplicación está lista
-
-    logger.info("Apagando API - Liberando recursos...")
-
-
-app = FastAPI(
-    title="Financial Data API",
-    description="API para datos financieros con visualizaciones interactivas",
-    lifespan=lifespan,
-    docs_url="/"
-)
-
+# Configurar CORS para permitir solicitudes desde el frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Permite todas las origenes (ajustar en producción)
+    allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
 )
 
 
-# Dependencias API
-async def validate_symbol(symbol: str) -> pd.DataFrame:
-    df = load_stock_data(symbol)
-    if df is None or df.empty:
-        logger.error(f"Símbolo inválido o datos vacíos: {symbol}")
-        raise HTTPException(404, detail="Símbolo no encontrado o datos corruptos")
-    return df
+# Estructura para almacenar en caché los DataFrames junto con su timestamp de modificación
+class CacheItem:
+    def __init__(self, df, last_modified):
+        self.df = df
+        self.last_load_time = datetime.now()
+        self.last_modified = last_modified
 
 
-# Endpoints principales
-@app.get("/financial-data/{symbol}", response_model=List[Dict[str, Any]])
-async def get_full_financial_data(
-        symbol: str,
-        limit: int = 100,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
-        df: pd.DataFrame = Depends(validate_symbol)
-):
-    """Endpoint principal para todos los datos financieros"""
-    logger.info(f"Solicitud de datos completos para {symbol}")
+# Diccionario para almacenar en caché los DataFrames
+dataframes_cache = {}
 
-    # Filtrar por fechas
-    if start_date:
-        df = df[df['timestamp'] >= pd.to_datetime(start_date)]
-    if end_date:
-        df = df[df['timestamp'] <= pd.to_datetime(end_date)]
-
-    # Ordenar y limitar
-    result = df.sort_values('timestamp', ascending=False).head(limit)
-    return result.to_dict(orient='records')
+# Lock para sincronización al acceder a la caché
+cache_lock = threading.Lock()
 
 
-@app.get("/financial-data/{symbol}/key-metrics", response_model=Dict[str, Any])
-async def get_key_metrics(
-        symbol: str,
-        df: pd.DataFrame = Depends(validate_symbol)
-):
-    """Obtiene las métricas clave más recientes"""
-    logger.info(f"Solicitud de métricas clave para {symbol}")
-
-    latest = df.iloc[0]
-    metrics = {
-        'currentPrice': latest.get('currentPrice'),
-        'previousClose': latest.get('previousClose'),
-        'dayLow': latest.get('dayLow'),
-        'dividendYield': latest.get('dividendYield'),
-        'volume': latest.get('volumen')
-    }
-
-    return {k: v for k, v in metrics.items() if pd.notnull(v)}
+def get_project_root():
+    """
+    Devuelve la ruta relativa a la raíz del proyecto
+    """
+    # La raíz del proyecto está dos niveles arriba de este archivo
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
-@app.get("/financial-data/{symbol}/chart", response_class=HTMLResponse)
-async def generate_price_chart_endpoint(
-        symbol: str,
-        chart_type: str = 'line',
-        df: pd.DataFrame = Depends(validate_symbol)
-):
-    """Genera un gráfico interactivo de precios"""
-    logger.info(f"Generando gráfico para {symbol} - Tipo: {chart_type}")
+def get_csv_path(symbol: str):
+    """
+    Obtiene la ruta del archivo CSV basado en el símbolo
+    """
+    root_path = get_project_root()
 
-    if 'currentPrice' not in df.columns:
-        raise HTTPException(400, detail="Datos de precio no disponibles")
+    # Mapear símbolo a nombre de archivo
+    if symbol.upper() == "BRK-B":
+        filename = "brk-b_stock_data.csv"
+    elif symbol.upper() == "ILF":
+        filename = "ilf_etf_data.csv"
+    else:
+        filename = f"{symbol.lower()}_{'etf_data' if 'ETF' in symbol.upper() else 'stock_data'}.csv"
 
-    # Generar clave única para el caché
-    cache_key = f"{symbol}_{chart_type}"
+    return os.path.join(root_path, "data", filename)
 
-    # Verificar caché
-    if cache_key in CHART_CACHE:
-        cached_time, chart_html = CHART_CACHE[cache_key]
-        if (time.time() - cached_time) < CHART_CACHE_TIMEOUT:
-            logger.debug(f"Usando gráfico en caché para {symbol}")
-            return HTMLResponse(content=chart_html)
 
-    # Generar nuevo gráfico
+def get_file_last_modified(file_path: str) -> float:
+    """
+    Obtiene el timestamp de última modificación del archivo
+    """
     try:
-        fig = generate_price_chart(df, symbol, chart_type)
-        chart_html = fig.to_html(full_html=False, include_plotlyjs='cdn')
-
-        # Actualizar caché
-        CHART_CACHE[cache_key] = (time.time(), chart_html)
-
-        return HTMLResponse(content=chart_html)
-
+        return os.path.getmtime(file_path) if os.path.exists(file_path) else 0
     except Exception as e:
-        logger.error(f"Error generando gráfico: {str(e)}", exc_info=True)
-        raise HTTPException(500, detail="Error al generar el gráfico")
+        logger.error(f"Error al obtener la fecha de modificación: {str(e)}")
+        return 0
 
 
-@app.get("/financial-data/{symbol}/chart-image")
-async def generate_price_chart_image(
-        symbol: str,
-        chart_type: str = 'line',
-        width: int = 1200,
-        height: int = 800,
-        df: pd.DataFrame = Depends(validate_symbol)
-):
-    """Versión en imagen del gráfico (PNG)"""
-    logger.info(f"Generando imagen de gráfico para {symbol}")
+def load_dataframe(symbol: str, force_reload: bool = False) -> pd.DataFrame:
+    """
+    Carga el DataFrame desde el CSV y maneja la caché
+    """
+    global dataframes_cache
 
-    try:
-        fig = generate_price_chart(df, symbol, chart_type)
-        img_bytes = fig.to_image(format="png", width=width, height=height)
+    file_path = get_csv_path(symbol)
+    current_modified_time = get_file_last_modified(file_path)
 
-        return FileResponse(
-            BytesIO(img_bytes),
-            media_type="image/png",
-            filename=f"{symbol}_chart.png"
-        )
-    except Exception as e:
-        logger.error(f"Error generando imagen: {str(e)}", exc_info=True)
-        raise HTTPException(500, detail="Error al generar la imagen")
+    with cache_lock:
+        # Verificar si debemos actualizar la caché
+        needs_update = force_reload or symbol not in dataframes_cache
 
+        if not needs_update and symbol in dataframes_cache:
+            cache_item = dataframes_cache[symbol]
+            # Verificar si el archivo ha sido modificado desde la última carga
+            if current_modified_time > cache_item.last_modified:
+                logger.info(f"Archivo CSV actualizado para {symbol}, recargando datos")
+                needs_update = True
+            # Verificar si han pasado más de 65 segundos desde la última carga (buffer de 5s)
+            elif (datetime.now() - cache_item.last_load_time).seconds > 65:
+                logger.info(f"Caché expirada para {symbol}, recargando datos")
+                needs_update = True
+            else:
+                logger.info(f"Usando caché para {symbol}")
+                return cache_item.df
 
-@app.get("/metadata/symbols")
-async def list_available_symbols():
-    """Lista de símbolos disponibles con metadatos"""
-    logger.info("Generando lista de símbolos disponibles")
-
-    symbols = []
-    try:
-        for csv_file in DATA_DIR.glob("*.csv"):
+        if needs_update:
             try:
-                symbol = csv_file.stem.split('_')[0].upper()
-                stats = csv_file.stat()
-                symbols.append({
-                    'symbol': symbol,
-                    'filename': csv_file.name,
-                    'last_modified': stats.st_mtime,
-                    'size_mb': round(stats.st_size / (1024 * 1024), 3)
-                })
+                if not os.path.exists(file_path):
+                    logger.error(f"Archivo CSV no encontrado: {file_path}")
+                    return None
+
+                logger.info(f"Cargando datos de {file_path}")
+
+                # Leer CSV
+                df = pd.read_csv(file_path)
+
+                # Manejar valores nulos - reemplazar con el valor anterior
+                df = df.ffill()
+
+                # Reemplazar los valores infinitos y NaN restantes con None
+                df = df.replace([float('inf'), float('-inf')], None)
+                df = df.where(pd.notnull(df), None)
+
+                # Actualizar caché con el nuevo DataFrame y timestamp
+                dataframes_cache[symbol] = CacheItem(df, current_modified_time)
+
+                return df
             except Exception as e:
-                logger.error(f"Error procesando archivo {csv_file}: {str(e)}")
-                continue
+                logger.error(f"Error al cargar datos de {symbol}: {str(e)}")
+                return None
 
+        # Si llegamos aquí, algo salió mal
+        return None
+
+
+def background_update_all_dataframes():
+    """
+    Actualiza todos los dataframes en segundo plano
+    """
+    try:
+        # Obtener lista de símbolos disponibles
+        symbols = list_available_stocks_internal()
+
+        for symbol in symbols:
+            load_dataframe(symbol, force_reload=True)
+
+        logger.info(f"Actualización en segundo plano completada para {len(symbols)} símbolos")
     except Exception as e:
-        logger.critical(f"Error accediendo al directorio de datos: {str(e)}")
-        raise HTTPException(500, detail="Error al leer archivos de datos")
+        logger.error(f"Error durante la actualización en segundo plano: {str(e)}")
 
-    return {"symbols": symbols}
+
+def list_available_stocks_internal():
+    """
+    Lista todos los símbolos disponibles (versión interna)
+    """
+    root_path = get_project_root()
+    data_dir = os.path.join(root_path, "data")
+
+    try:
+        files = [f for f in os.listdir(data_dir) if f.endswith('.csv')]
+        symbols = []
+        for f in files:
+            if f == "brk-b_stock_data.csv":
+                symbols.append("BRK-B")
+            elif f.endswith("_etf_data.csv"):
+                symbols.append(f.split('_')[0].upper())
+            else:
+                symbols.append(f.split('_')[0].upper())
+        return symbols
+    except Exception as e:
+        logger.error(f"Error al listar acciones: {str(e)}")
+        return []
+
+
+# get_latest_data function
+def get_latest_data(symbol: str) -> Dict:
+    """
+    Obtiene los datos más recientes para un símbolo
+    """
+    df = load_dataframe(symbol)
+
+    if df is None or df.empty:
+        return None
+
+    # Asumimos que el último registro es el más reciente
+    latest_data = df.iloc[-1].to_dict()
+
+    # Reemplazar valores NaN con None para compatibilidad con JSON
+    for key, value in latest_data.items():
+        if pd.isna(value):
+            latest_data[key] = None
+
+    # Asegurar que las columnas requeridas estén presentes
+    required_columns = ['currentPrice', 'previousClose', 'open', 'dayLow', 'dayHigh',
+                        'dividendYield', 'financialCurrency', 'volumen', 'symbol', 'timestamp']
+
+    for col in required_columns:
+        if col not in latest_data:
+            latest_data[col] = None
+
+    # Fix data types
+    if latest_data['financialCurrency'] is None:
+        latest_data['financialCurrency'] = "USD"  # Set a default value
+
+    # Ensure volumen is an integer
+    try:
+        if latest_data['volumen'] is not None:
+            latest_data['volumen'] = int(latest_data['volumen'])
+        else:
+            latest_data['volumen'] = 0  # Default value if None
+    except (ValueError, TypeError):
+        # If conversion fails, set to default
+        latest_data['volumen'] = 0
+
+    return latest_data
+
+
+def get_historical_data(symbol: str, days: int = 30) -> List[Dict]:
+    """
+    Obtiene datos históricos para un símbolo
+    """
+    df = load_dataframe(symbol)
+
+    if df is None or df.empty:
+        return []
+
+    # Convertir 'timestamp' a datetime si existe
+    if 'timestamp' in df.columns:
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df = df.sort_values('timestamp', ascending=False)
+
+    # Tomar los últimos 'days' registros
+    historical_df = df.head(days)
+
+    # Convertir a lista de diccionarios
+    records = historical_df.to_dict(orient='records')
+
+    # Reemplazar valores NaN con None para compatibilidad con JSON
+    for record in records:
+        for key, value in record.items():
+            if pd.isna(value):
+                record[key] = None
+            # Convertir timestamp a string si es datetime
+            elif key == 'timestamp' and isinstance(value, pd.Timestamp):
+                record[key] = value.isoformat()
+
+    return records
+
+
+# Función para limpiar datos no serializables en JSON
+def clean_json_data(data):
+    """
+    Limpia los datos para asegurar que sean serializables en JSON
+    """
+    if isinstance(data, dict):
+        return {k: clean_json_data(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [clean_json_data(item) for item in data]
+    elif pd.isna(data) or data is pd.NA:
+        return None
+    elif isinstance(data, float) and (pd.isna(data) or data == float('inf') or data == float('-inf')):
+        return None
+    elif isinstance(data, pd.Timestamp):
+        return data.isoformat()
+    else:
+        return data
+
+
+# Endpoints de la API
+@app.get("/")
+def read_root():
+    return {"message": "BVL Live Tracker API v1.0"}
+
+
+@app.get("/stocks", response_model=List[str])
+def list_available_stocks():
+    """
+    Lista todos los símbolos disponibles
+    """
+    symbols = list_available_stocks_internal()
+    if not symbols:
+        raise HTTPException(status_code=500, detail="Error al obtener la lista de acciones")
+    return symbols
+
+
+@app.get("/stocks/{symbol}", response_model=StockData)
+def get_stock_data(symbol: str):
+    """
+    Obtiene los datos más recientes para un símbolo específico
+    """
+    data = get_latest_data(symbol)
+
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"Datos no encontrados para {symbol}")
+
+    # Asegurar que los datos son JSON serializables
+    data = clean_json_data(data)
+
+    return data
+
+
+@app.get("/stocks/{symbol}/history")
+def get_stock_history(symbol: str, days: int = 30):
+    """
+    Obtiene el historial de datos para un símbolo
+    """
+    data = get_historical_data(symbol, days)
+
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Datos históricos no encontrados para {symbol}")
+
+    # Asegurar que los datos son JSON serializables
+    data = clean_json_data(data)
+
+    return data
+
+
+@app.get("/stocks/{symbol}/chart/{field}")
+def get_stock_chart(symbol: str, field: str, days: int = 30):
+    """
+    Genera datos para un gráfico de un campo específico
+    """
+    valid_fields = ['currentPrice', 'previousClose', 'open', 'dayLow', 'dayHigh',
+                    'dividendYield', 'volumen']
+
+    if field not in valid_fields:
+        raise HTTPException(status_code=400, detail=f"Campo inválido. Opciones: {', '.join(valid_fields)}")
+
+    data = get_historical_data(symbol, days)
+
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Datos históricos no encontrados para {symbol}")
+
+    # Filtrar solo las columnas necesarias y asegurar que no hay valores NaN
+    chart_data = []
+    for item in data:
+        if item.get(field) is not None:
+            chart_data.append({"timestamp": item["timestamp"], field: item.get(field)})
+
+    # Ordenar por fecha
+    chart_data.sort(key=lambda x: x["timestamp"] if x["timestamp"] is not None else "")
+
+    return chart_data
+
+
+@app.get("/compare")
+def compare_stocks(symbols: str, field: str = "currentPrice", days: int = 30):
+    """
+    Compara múltiples símbolos en un campo específico
+
+    Args:
+        symbols: Lista de símbolos separados por coma (ej: BAP,BRK-B,ILF)
+        field: Campo a comparar (default: currentPrice)
+        days: Número de días de historia (default: 30)
+
+    Returns:
+        Diccionario con datos para cada símbolo
+    """
+    symbol_list = symbols.split(",")
+    valid_fields = ['currentPrice', 'previousClose', 'open', 'dayLow', 'dayHigh',
+                    'dividendYield', 'volumen']
+
+    if field not in valid_fields:
+        raise HTTPException(status_code=400, detail=f"Campo inválido. Opciones: {', '.join(valid_fields)}")
+
+    comparison_data = {}
+
+    for symbol in symbol_list:
+        data = get_historical_data(symbol, days)
+        if data:
+            # Extraer solo los campos relevantes y filtrar valores nulos
+            symbol_data = []
+            for item in data:
+                if item.get(field) is not None:
+                    symbol_data.append({"timestamp": item["timestamp"], field: item.get(field)})
+
+            symbol_data.sort(key=lambda x: x["timestamp"] if x["timestamp"] is not None else "")
+            comparison_data[symbol] = symbol_data
+
+    if not comparison_data:
+        raise HTTPException(status_code=404, detail="No se encontraron datos para comparar")
+
+    # Asegurar que los datos son JSON serializables
+    comparison_data = clean_json_data(comparison_data)
+
+    return comparison_data
+
+
+@app.post("/refresh")
+def refresh_data(background_tasks: BackgroundTasks):
+    """
+    Fuerza una actualización de todos los datos en caché
+    """
+    background_tasks.add_task(background_update_all_dataframes)
+    return {"message": "Actualización de datos iniciada en segundo plano"}
 
 
 @app.get("/health")
-async def health_check():
-    """Endpoint de salud avanzado"""
-    health_data = {
-        'status': 'ok',
-        'timestamp': time.time(),
-        'data_dir': str(DATA_DIR),
-        'cache_entries': len(data_cache),
-        'active_symbols': [k.split('_')[0] for k in data_cache.keys()],
-        'system_load': os.getloadavg()
+def health_check():
+    """
+    Endpoint para verificar el estado de la API
+    """
+    return {
+        "status": "ok",
+        "timestamp": datetime.now().isoformat(),
+        "cached_symbols": list(dataframes_cache.keys())
     }
-    return health_data
+
+
+# Función para iniciar el bucle de actualización periódica
+def start_periodic_updates():
+    """
+    Inicia un hilo para actualizar periódicamente todos los datos
+    """
+
+    def update_loop():
+        while True:
+            try:
+                logger.info("Iniciando actualización periódica de datos")
+                background_update_all_dataframes()
+                # Esperar 60 segundos antes de la próxima actualización
+                time.sleep(60)
+            except Exception as e:
+                logger.error(f"Error en el bucle de actualización: {str(e)}")
+                # Si hay un error, esperar 10 segundos antes de reintentar
+                time.sleep(10)
+
+    # Iniciar el hilo de actualización
+    update_thread = threading.Thread(target=update_loop, daemon=True)
+    update_thread.start()
+    logger.info("Hilo de actualización periódica iniciado")
+
+
+@app.on_event("startup")
+def startup_event():
+    """
+    Evento que se ejecuta al iniciar la aplicación
+    """
+    # Iniciar actualizaciones periódicas
+    start_periodic_updates()
+    logger.info("API inicializada y actualización periódica configurada")
 
 
 if __name__ == "__main__":
     import uvicorn
 
+    # Ejecutar la aplicación con Uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
