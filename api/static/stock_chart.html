@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Gráfico de Acción</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <h1 id="title">Cargando...</h1>
+    <canvas id="chart"></canvas>
+    <script>
+        const symbol = window.location.pathname.split('/')[3];
+        const field = window.location.pathname.split('/')[5];
+        document.getElementById("title").textContent = `Gráfico de ${symbol} - ${field}`;
+
+        fetch(`/stocks/${symbol}/chart/${field}`)
+            .then(response => response.json())
+            .then(data => {
+                new Chart(
+                    document.getElementById("chart"),
+                    {
+                        type: 'line',
+                        data: {
+                            labels: data.map(entry => entry.timestamp),
+                            datasets: [{
+                                label: field,
+                                data: data.map(entry => entry[field]),
+                                borderColor: 'rgb(75, 192, 192)'
+                            }]
+                        }
+                    }
+                );
+            });
+    </script>
+</body>
+</html>

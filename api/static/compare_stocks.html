@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Comparar Acciones</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .chart-container { width: 80%; margin: 20px auto; }
+        .controls { margin: 20px 0; }
+        .error { color: #c0392b; }
+    </style>
+</head>
+<body>
+    <h1>Comparar Acciones</h1>
+    <div class="controls">
+        <input type="text" id="symbols" placeholder="Símbolos (ej: BAP,BRK-B)">
+        <button onclick="loadComparison()">Comparar</button>
+    </div>
+    <div class="chart-container">
+        <canvas id="comparisonChart"></canvas>
+    </div>
+
+    <script>
+        function loadComparison() {
+            const symbols = document.getElementById('symbols').value;
+            fetch(`/compare?symbols=${symbols}&field=currentPrice`)
+                .then(response => {
+                    if (!response.ok) throw new Error('Error al comparar');
+                    return response.json();
+                })
+                .then(data => {
+                    const ctx = document.getElementById('comparisonChart').getContext('2d');
+                    new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            datasets: Object.entries(data).map(([symbol, entries]) => ({
+                                label: symbol,
+                                data: entries.map(entry => ({
+                                    x: new Date(entry.timestamp),
+                                    y: entry.currentPrice
+                                })),
+                                borderColor: `#${Math.floor(Math.random()*16777215).toString(16)}`,
+                                tension: 0.1
+                            }))
+                        },
+                        options: {
+                            scales: {
+                                x: { type: 'time' }
+                            }
+                        }
+                    });
+                });
+        }
+    </script>
+</body>
+</html>

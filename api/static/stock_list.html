@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Listado de Acciones</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1 { color: #2c3e50; }
+        ul { list-style: none; padding: 0; }
+        li { margin: 10px 0; }
+        a {
+            text-decoration: none;
+            color: #2980b9;
+            padding: 8px 12px;
+            border: 1px solid #2980b9;
+            border-radius: 4px;
+        }
+        a:hover { background: #f0f8ff; }
+        .error { color: #c0392b; }
+    </style>
+</head>
+<body>
+    <h1>Acciones Disponibles</h1>
+    <div id="loading">Cargando...</div>
+    <ul id="stockList"></ul>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            fetch('/stocks')
+                .then(response => {
+                    if (!response.ok) throw new Error('Error al cargar acciones');
+                    return response.json();
+                })
+                .then(symbols => {
+                    const list = document.getElementById('stockList');
+                    list.innerHTML = symbols.map(symbol => `
+                        <li>
+                            <a href="/html/stocks/${symbol}">${symbol}</a>
+                        </li>
+                    `).join('');
+                    document.getElementById('loading').style.display = 'none';
+                })
+                .catch(error => {
+                    document.getElementById('loading').innerHTML =
+                        `<div class="error">${error.message}</div>`;
+                });
+        });
+    </script>
+</body>
+</html>

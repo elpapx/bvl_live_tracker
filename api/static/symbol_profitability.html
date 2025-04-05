@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Rentabilidad de Acción</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .metrics { margin: 20px 0; }
+        .metric { margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <h1 id="symbolHeader"></h1>
+    <div class="metrics" id="profitabilityData"></div>
+
+    <script>
+        const symbol = window.location.pathname.split('/').pop();
+        document.getElementById('symbolHeader').textContent = symbol;
+
+        fetch(`/portfolio/profitability/${symbol}`)
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('profitabilityData').innerHTML = `
+                    <div class="metric">
+                        Precio Original: $${data.original_price.toFixed(2)}
+                    </div>
+                    <div class="metric">
+                        Precio Actual: $${data.current_price.toFixed(2)}
+                    </div>
+                    <div class="metric" style="color: ${data.profitability_percentage >= 0 ? '#27ae60' : '#c0392b'}">
+                        Rentabilidad: ${data.profitability_percentage.toFixed(2)}%
+                    </div>
+                `;
+            });
+    </script>
+</body>
+</html>

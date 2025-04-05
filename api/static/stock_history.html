@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Historial de Acción</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        table { border-collapse: collapse; margin-top: 20px; }
+        th, td { padding: 12px; border: 1px solid #ddd; text-align: left; }
+        th { background-color: #f8f9fa; }
+        .error { color: #c0392b; }
+    </style>
+</head>
+<body>
+    <h1 id="historyHeader"></h1>
+    <div id="loading">Cargando historial...</div>
+    <table id="historyTable"></table>
+
+    <script>
+        const symbol = window.location.pathname.split('/')[3];
+        document.getElementById('historyHeader').textContent = `Historial de ${symbol}`;
+
+        fetch(`/stocks/${symbol}/history`)
+            .then(response => {
+                if (!response.ok) throw new Error('Error al cargar historial');
+                return response.json();
+            })
+            .then(data => {
+                const table = document.getElementById('historyTable');
+                table.innerHTML = `
+                    <tr>
+                        <th>Fecha</th>
+                        <th>Precio</th>
+                        <th>Volumen</th>
+                    </tr>
+                    ${data.map(entry => `
+                        <tr>
+                            <td>${new Date(entry.timestamp).toLocaleDateString()}</td>
+                            <td>${entry.currentPrice?.toFixed(2) ?? 'N/A'}</td>
+                            <td>${entry.volumen ?? 'N/A'}</td>
+                        </tr>
+                    `).join('')}
+                `;
+                document.getElementById('loading').style.display = 'none';
+            })
+            .catch(error => {
+                document.getElementById('loading').innerHTML =
+                    `<div class="error">${error.message}</div>`;
+            });
+    </script>
+</body>
+</html>

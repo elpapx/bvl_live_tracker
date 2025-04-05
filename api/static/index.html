@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BVL Live Tracker</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+            color: #333;
+        }
+        h1, h2 {
+            color: #2c3e50;
+        }
+        .container {
+            background-color: #f9f9f9;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        ul {
+            list-style-type: none;
+            padding: 0;
+        }
+        li {
+            margin-bottom: 10px;
+        }
+        a {
+            text-decoration: none;
+            color: #3498db;
+            padding: 8px;
+            border-radius: 4px;
+        }
+        a:hover {
+            background-color: #3498db;
+            color: white;
+        }
+        .dashboard {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+        }
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 15px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .card-header {
+            font-weight: bold;
+            font-size: 1.2em;
+            margin-bottom: 15px;
+            color: #2c3e50;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
+        }
+        .btn {
+            display: inline-block;
+            background-color: #3498db;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 4px;
+            margin-top: 10px;
+            text-align: center;
+        }
+        .btn:hover {
+            background-color: #2980b9;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>BVL Live Tracker</h1>
+        <p>Bienvenido al rastreador en vivo de acciones y ETFs. Esta interfaz te permite monitorear datos en tiempo real e históricos.</p>
+    </div>
+
+    <div class="container">
+        <h2>Navegación principal</h2>
+        <div class="dashboard">
+            <div class="card">
+                <div class="card-header">Lista de Acciones</div>
+                <p>Ver todas las acciones y ETFs disponibles para monitoreo.</p>
+                <a href="/html/stocks" class="btn">Ver Lista</a>
+            </div>
+
+            <div class="card">
+                <div class="card-header">Comparar Acciones</div>
+                <p>Compara el rendimiento de múltiples acciones en un solo gráfico.</p>
+                <a href="/html/compare" class="btn">Comparar</a>
+            </div>
+
+            <div class="card">
+                <div class="card-header">Rentabilidad del Portafolio</div>
+                <p>Ver la rentabilidad actual de todo tu portafolio.</p>
+                <a href="/html/portfolio/profitability" class="btn">Ver Rentabilidad</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Acciones populares</h2>
+        <ul id="popularStocks">
+            <li><a href="/html/stocks/BAP">BAP - Credicorp</a></li>
+            <li><a href="/html/stocks/BRK-B">BRK-B - Berkshire Hathaway B</a></li>
+            <li><a href="/html/stocks/ILF">ILF - iShares Latin America 40 ETF</a></li>
+        </ul>
+    </div>
+
+    <script>
+        // Podríamos cargar dinámicamente las acciones populares, pero por ahora las tenemos hardcodeadas
+        document.addEventListener('DOMContentLoaded', function() {
+            fetch('/stocks')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Error al obtener la lista de acciones');
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data && data.length > 0) {
+                        // Mostrar un mensaje de éxito discreto
+                        console.log('API operativa:', data.length, 'acciones disponibles');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                });
+        });
+    </script>
+</body>
+</html>
