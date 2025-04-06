@@ -32,7 +32,8 @@ class ScraperConfig:
                 "currentPrice", "previousClose", "open", "dayLow", "dayHigh",
                 "bid", "dividendYield", "earningsGrowth", "revenueGrowth",
                 "grossMargins", "ebitdaMargins", "operatingMargins", "financialCurrency",
-                "returnOnAssets", "returnOnEquity", "bookValue", "priceToBook", 'volume'
+                "returnOnAssets", "returnOnEquity", "bookValue", "priceToBook", 'volume',
+                'fiftyTwoWeekRange', 'marketCap', 'trailingPE'
             ],
             "filename": "bap_stock_data.csv"
         },
@@ -41,7 +42,8 @@ class ScraperConfig:
                 "currentPrice", "previousClose", "open", "dayLow", "dayHigh",
                 "bid", "dividendYield", "earningsGrowth", "revenueGrowth",
                 "grossMargins", "ebitdaMargins", "operatingMargins", "financialCurrency",
-                "returnOnAssets", "returnOnEquity", "bookValue", "priceToBook", 'volume'
+                "returnOnAssets", "returnOnEquity", "bookValue", "priceToBook", 'volume',
+                'fiftyTwoWeekRange', 'marketCap', 'trailingPE'
             ],
             "filename": "brk-b_stock_data.csv"
         },
@@ -57,9 +59,12 @@ class ScraperConfig:
                 "regularMarketVolume",
                 "averageVolume",
                 "averageVolume10days",
+                'fiftyTwoWeekRange',
                 "bid",
                 "ask",
-                "dividendYield"
+                "dividendYield",
+                'marketCap',
+                'trailingPE'
             ],
             "filename": "ilf_etf_data.csv",
             "is_etf": True,

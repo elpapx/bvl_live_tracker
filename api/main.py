@@ -72,19 +72,30 @@ class ProfitabilityData(BaseModel):
     current_price: float
     profitability_percentage: float
 
-
-# Modelos Pydantic
 class TimeSeriesPoint(BaseModel):
     timestamp: str
     price: float
     return_percentage: Optional[float] = None
+    volume: Optional[float] = None
+    open: Optional[float] = None
+    day_low: Optional[float] = None
+    day_high: Optional[float] = None
 
 class SymbolTimeSeries(BaseModel):
     symbol: str
     data: List[TimeSeriesPoint]
     period: str
     current_price: Optional[float] = None
+    original_price: Optional[float] = None  # Nuevo campo
     current_profitability: Optional[float] = None
+    average_volume: Optional[float] = None
+    open_price: Optional[float] = None
+    day_high: Optional[float] = None
+    day_low: Optional[float] = None
+    fifty_two_week_range: Optional[str] = None
+    market_cap: Optional[float] = None
+    trailing_pe: Optional[float] = None
+    dividend_yield: Optional[float] = None
 
 class TimeSeriesResponse(BaseModel):
     series: List[SymbolTimeSeries]
@@ -220,8 +231,10 @@ def load_dataframe(symbol: str, force_reload: bool = False) -> pd.DataFrame:
                 # Leer CSV con manejo de errores
                 df = pd.read_csv(file_path)
 
-                # Eliminar columnas no numéricas que puedan causar problemas
-                df = df.loc[:, ~df.columns.isin(['symbol', 'Symbol', 'Ticker'])]
+                # Eliminar columnas no numéricas que puedan causar problemas (excepto las que necesitamos)
+                columns_to_drop = [col for col in ['symbol', 'Symbol', 'Ticker']
+                                   if col in df.columns]
+                df = df.drop(columns=columns_to_drop)
 
                 # Verificar columnas requeridas
                 required_cols = ['timestamp', 'currentPrice']
@@ -234,11 +247,22 @@ def load_dataframe(symbol: str, force_reload: bool = False) -> pd.DataFrame:
                 df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
                 df = df.dropna(subset=['timestamp'])
 
-                # Convertir columnas numéricas
-                numeric_cols = ['currentPrice', 'open', 'dayHigh', 'dayLow', 'volumen']
-                for col in numeric_cols:
-                    if col in df.columns:
-                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                # Lista de todas las columnas numéricas que necesitamos
+                numeric_cols = [
+                    'currentPrice', 'open', 'dayHigh', 'dayLow', 'volumen',
+                    'marketCap', 'trailingPE', 'dividendYield'
+                ]
+
+                # Convertir solo las columnas que existen en el DataFrame
+                existing_numeric_cols = [col for col in numeric_cols if col in df.columns]
+                for col in existing_numeric_cols:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+
+                # Procesar fiftyTwoWeekRange si existe (puede ser string)
+                if 'fiftyTwoWeekRange' in df.columns:
+                    # Eliminar valores inválidos
+                    df['fiftyTwoWeekRange'] = df['fiftyTwoWeekRange'].astype(str)
+                    df.loc[df['fiftyTwoWeekRange'] == 'nan', 'fiftyTwoWeekRange'] = None
 
                 # Limpieza de datos
                 df = df.ffill().bfill()
@@ -249,17 +273,19 @@ def load_dataframe(symbol: str, force_reload: bool = False) -> pd.DataFrame:
                     logger.error(f"DataFrame vacío después de limpieza para {symbol}")
                     return None
 
+                # Ordenar por timestamp por si acaso
+                df = df.sort_values('timestamp')
+
                 # Actualizar caché
                 dataframes_cache[symbol] = CacheItem(df, current_modified_time)
 
                 return df
 
             except Exception as e:
-                logger.error(f"Error al cargar datos de {symbol}: {str(e)}")
+                logger.error(f"Error al cargar datos de {symbol}: {str(e)}", exc_info=True)
                 return None
 
     return None
-
 
 def background_update_all_dataframes():
     """
@@ -847,7 +873,7 @@ async def get_time_series_with_profitability(
         period: str = Query("1w", description="Periodo (1d, 1w, 1m, 3m)"),
         compare_all: bool = Query(False, description="Mostrar todos los símbolos juntos")
 ):
-    """Obtiene series temporales con información de rentabilidad"""
+    """Obtiene series temporales con información de rentabilidad, volumen y PE Ratio"""
     periods_map = {
         "1d": timedelta(days=1),
         "1w": timedelta(weeks=1),
@@ -870,11 +896,9 @@ async def get_time_series_with_profitability(
                 logger.warning(f"No hay datos disponibles para {sym}")
                 continue
 
-            # Asegúrate de que la columna timestamp es datetime
             df['timestamp'] = pd.to_datetime(df['timestamp'])
             start_date = end_date - periods_map[period]
 
-            # Filtrar y ordenar datos por fecha
             filtered_df = df[(df['timestamp'] >= start_date) & (df['timestamp'] <= end_date)]
             filtered_df = filtered_df.sort_values('timestamp')
 
@@ -882,21 +906,19 @@ async def get_time_series_with_profitability(
                 logger.warning(f"No hay datos para {sym} en el período {period}")
                 continue
 
-            # Obtener el precio original para calcular rentabilidad
             original_price = ORIGINAL_PRICES.get(sym)
             if original_price is None:
                 logger.warning(f"No hay precio original definido para {sym}")
                 original_price = filtered_df['currentPrice'].iloc[0] if not filtered_df.empty else None
 
-            logger.debug(f"Precio original para {sym}: {original_price}")
+            avg_volume = filtered_df['volumen'].mean() if 'volumen' in filtered_df.columns else None
 
-            # Crear puntos de datos de serie temporal
             series_data = []
             for _, row in filtered_df.iterrows():
                 if pd.notna(row['currentPrice']):
                     price = float(row['currentPrice'])
+                    volume = float(row['volumen']) if 'volumen' in row and pd.notna(row['volumen']) else None
 
-                    # Calcular el porcentaje de retorno
                     return_pct = None
                     if original_price is not None and original_price > 0:
                         return_pct = ((price - original_price) / original_price) * 100
@@ -904,38 +926,56 @@ async def get_time_series_with_profitability(
                     point = TimeSeriesPoint(
                         timestamp=row['timestamp'].isoformat(),
                         price=price,
-                        return_percentage=return_pct
+                        return_percentage=return_pct,
+                        volume=volume,
+                        open=float(row['open']) if 'open' in row and pd.notna(row['open']) else None,
+                        day_low=float(row['dayLow']) if 'dayLow' in row and pd.notna(row['dayLow']) else None,
+                        day_high=float(row['dayHigh']) if 'dayHigh' in row and pd.notna(row['dayHigh']) else None
                     )
                     series_data.append(point)
 
-            # Obtener el último precio para mostrar en la respuesta
-            last_price = None
-            current_profitability = None
+            last_record = filtered_df.iloc[-1] if not filtered_df.empty else None
+            last_price = last_record['currentPrice'] if last_record is not None else None
 
-            if series_data:
-                last_price = series_data[-1].price
-                if original_price is not None and original_price > 0:
-                    current_profitability = ((last_price - original_price) / original_price) * 100
-
-            # Crear la serie para este símbolo
             symbol_series = SymbolTimeSeries(
                 symbol=sym,
                 data=series_data,
                 period=period,
+                original_price= original_price,
                 current_price=last_price,
-                current_profitability=current_profitability
+                current_profitability=((last_price - original_price) / original_price) * 100
+                if last_price is not None and original_price is not None and original_price > 0 else None,
+                average_volume=avg_volume,
+                open_price=float(last_record['open']) if last_record is not None and 'open' in last_record and pd.notna(
+                    last_record['open']) else None,
+                day_high=float(
+                    last_record['dayHigh']) if last_record is not None and 'dayHigh' in last_record and pd.notna(
+                    last_record['dayHigh']) else None,
+                day_low=float(
+                    last_record['dayLow']) if last_record is not None and 'dayLow' in last_record and pd.notna(
+                    last_record['dayLow']) else None,
+                market_cap=float(last_record['marketCap'])
+                if last_record is not None and 'marketCap' in last_record and pd.notna(
+                    last_record['marketCap']) else None,
+                trailing_pe=float(last_record['trailingPE'])
+                if last_record is not None and 'trailingPE' in last_record and pd.notna(
+                    last_record['trailingPE']) else None,
+                dividend_yield=float(last_record['dividendYield'])
+                if last_record is not None and 'dividendYield' in last_record and pd.notna(
+                    last_record['dividendYield']) else None,
+                fifty_two_week_range=last_record['fiftyTwoWeekRange']
+                if last_record is not None and 'fiftyTwoWeekRange' in last_record and pd.notna(
+                    last_record['fiftyTwoWeekRange']) else None
             )
 
             result.append(symbol_series)
-            logger.debug(f"Procesados {len(series_data)} puntos para {sym}")
 
         except Exception as e:
             logger.error(f"Error procesando {sym}: {str(e)}", exc_info=True)
 
-    if not result:
-        logger.warning("No se encontraron datos para ningún símbolo")
-
     return TimeSeriesResponse(series=result)
+
+
 @app.post("/refresh")
 def refresh_data(background_tasks: BackgroundTasks):
     """
