@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Análisis de Acciones en Tiempo Real</title>
+
+    <!-- Dependencias necesarias en orden correcto -->
+    <script src="https://cdn.jsdelivr.net/npm/date-fns@2.29.3"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0"></script>
+
+    <style>
+        :root {
+            --primary-color: #2c3e50;
+            --secondary-color: #3498db;
+            --success-color: #27ae60;
+            --danger-color: #e74c3c;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f6fa;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .selector-container {
+            margin-bottom: 25px;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        #stockSelector {
+            padding: 10px 15px;
+            border: 2px solid var(--primary-color);
+            border-radius: 6px;
+            font-size: 16px;
+            background: white;
+            cursor: pointer;
+            min-width: 250px;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 500px;
+            margin: 25px 0;
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+        }
+
+        .error-message {
+            color: #e74c3c;
+            padding: 15px;
+            margin: 20px 0;
+            border: 1px solid #e74c3c;
+            border-radius: 4px;
+            background: #fadbd8;
+            display: none;
+        }
+
+        .loading-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(255, 255, 255, 0.8);
+            z-index: 999;
+            justify-content: center;
+            align-items: center;
+            font-size: 24px;
+            color: var(--primary-color);
+        }
+
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-top: 30px;
+        }
+
+        .info-card {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            border-left: 4px solid var(--secondary-color);
+        }
+
+        .info-card h3 {
+            margin: 0 0 15px 0;
+            color: var(--primary-color);
+        }
+
+        .info-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: var(--primary-color);
+        }
+
+        .positive {
+            color: var(--success-color) !important;
+        }
+
+        .negative {
+            color: var(--danger-color) !important;
+        }
+
+        .profitability-section {
+            text-align: center;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="loading-overlay" id="loading">Cargando...</div>
+    <div id="errorMessage" class="error-message"></div>
+
+    <div class="container">
+        <div class="header">
+            <h1>📈 Análisis de Acciones</h1>
+            <p>Visualización en tiempo real de datos bursátiles</p>
+        </div>
+
+        <div class="selector-container">
+            <select id="stockSelector" onchange="loadChartData()">
+                <option value="" disabled selected>Cargando acciones...</option>
+            </select>
+            <button onclick="loadChartData()">Actualizar</button>
+        </div>
+
+        <div class="profitability-section">
+            <h2>Rentabilidad</h2>
+            <div id="profitability" class="info-value">-</div>
+            <div id="originalPrice" class="info-subtext"></div>
+        </div>
+
+        <div class="chart-container">
+            <canvas id="priceChart"></canvas>
+        </div>
+
+        <div class="info-grid">
+            <div class="info-card">
+                <h3>Precio Apertura</h3>
+                <div id="openPrice" class="info-value">-</div>
+            </div>
+
+            <div class="info-card">
+                <h3>Cierre Anterior</h3>
+                <div id="previousClose" class="info-value">-</div>
+            </div>
+
+            <div class="info-card">
+                <h3>Volumen Actual</h3>
+                <div id="volume" class="info-value">-</div>
+            </div>
+
+            <div class="info-card">
+                <h3>Volumen Promedio</h3>
+                <div id="avgVolume" class="info-value">-</div>
+            </div>
+
+            <div class="info-card">
+                <h3>Dividend Yield</h3>
+                <div id="dividendYield" class="info-value">-</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let priceChart = null;
+        const API_BASE = 'http://localhost:8000';
+
+        async function initializeStocks() {
+            try {
+                const response = await fetch(`${API_BASE}/stocks`);
+                if (!response.ok) throw new Error('Error al cargar acciones');
+
+                const symbols = await response.json();
+                const selector = document.getElementById('stockSelector');
+
+                selector.innerHTML = symbols.map(symbol =>
+                    `<option value="${symbol}">${symbol}</option>`
+                ).join('');
+
+                if (symbols.length > 0) selector.value = symbols[0];
+            } catch (error) {
+                showError(`Error inicial: ${error.message}`);
+            }
+        }
+
+        async function loadChartData() {
+            showLoading(true);
+            hideError();
+
+            try {
+                const symbol = document.getElementById('stockSelector').value;
+                const response = await fetch(`${API_BASE}/stocks/${symbol}/simple-chart`);
+
+                if (!response.ok) throw new Error(`Error HTTP: ${response.status}`);
+
+                const data = await response.json();
+                if (data.status === "error") throw new Error("Datos no disponibles");
+
+                updateChart(data);
+                updateInfo(data);
+            } catch (error) {
+                showError(`Error al cargar datos: ${error.message}`);
+                console.error('Error:', error);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        function createNewChart(ctx, data) {
+            return new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: [{
+                        label: 'Precio',
+                        data: data.data.map(item => ({
+                            x: new Date(item.timestamp),
+                            y: item.price
+                        })),
+                        borderColor: '#3498db',
+                        backgroundColor: 'rgba(52, 152, 219, 0.1)',
+                        tension: 0.3,
+                        pointRadius: 2,
+                        borderWidth: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                tooltipFormat: 'dd/MM/yy HH:mm',
+                                unit: 'day'
+                            },
+                            adapters: {
+                                date: {
+                                    locale: 'es'
+                                }
+                            },
+                            grid: { display: false }
+                        },
+                        y: {
+                            beginAtZero: false,
+                            ticks: {
+                                callback: value => `$${value.toFixed(2)}`
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false,
+                            callbacks: {
+                                title: context => {
+                                    const date = new Date(context[0].parsed.x);
+                                    return date.toLocaleDateString('es-ES', {
+                                        day: '2-digit',
+                                        month: '2-digit',
+                                        year: 'numeric',
+                                        hour: '2-digit',
+                                        minute: '2-digit'
+                                    });
+                                },
+                                label: context =>
+                                    ` ${context.dataset.label}: $${context.parsed.y.toFixed(2)}`
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateExistingChart(data) {
+            priceChart.data.datasets[0].data = data.data.map(item => ({
+                x: new Date(item.timestamp),
+                y: item.price
+            }));
+            priceChart.update('none');
+        }
+
+        function updateChart(data) {
+            const ctx = document.getElementById('priceChart').getContext('2d');
+
+            if (!priceChart) {
+                priceChart = createNewChart(ctx, data);
+            } else {
+                updateExistingChart(data);
+            }
+        }
+
+        function updateInfo(data) {
+            const profitabilityElem = document.getElementById('profitability');
+            if (data.profitability !== null) {
+                profitabilityElem.innerHTML = `
+                    <span class="${data.profitability >= 0 ? 'positive' : 'negative'}">
+                        ${data.profitability.toFixed(2)}%
+                    </span>
+                `;
+                document.getElementById('originalPrice').textContent =
+                    data.original_price ? `Inversión inicial: $${data.original_price}` : '';
+            }
+
+            const format = {
+                currency: value => value ? `$${value.toFixed(2)}` : '-',
+                number: value => value ? value.toLocaleString() : '-',
+                percent: value => value ? `${(value * 100).toFixed(2)}%` : '-'
+            };
+
+            document.getElementById('openPrice').innerHTML = `<span>${format.currency(data.info.open)}</span>`;
+            document.getElementById('previousClose').innerHTML = `<span>${format.currency(data.info.previousClose)}</span>`;
+            document.getElementById('volume').innerHTML = `<span>${format.number(data.info.volumen)}</span>`;
+            document.getElementById('avgVolume').innerHTML = `<span>${format.number(data.info.averageVolume)}</span>`;
+            document.getElementById('dividendYield').innerHTML = `<span>${format.percent(data.info.dividendYield)}</span>`;
+        }
+
+        function showError(message) {
+            const errorElem = document.getElementById('errorMessage');
+            errorElem.style.display = 'block';
+            errorElem.textContent = message;
+        }
+
+        function hideError() {
+            document.getElementById('errorMessage').style.display = 'none';
+        }
+
+        function showLoading(show) {
+            document.getElementById('loading').style.display = show ? 'flex' : 'none';
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            initializeStocks().then(() => {
+                loadChartData();
+                setInterval(loadChartData, 60000);
+            });
+        });
+    </script>
+</body>
+</html>

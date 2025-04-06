@@ -1,3 +1,6 @@
+#---- IMPORT LIBRARIES --------
+#------------------------------
+
 import os
 import time
 import threading
@@ -19,12 +22,29 @@ from typing import Dict, List, Optional, Tuple, Any
 from pydantic import BaseModel
 from io import BytesIO
 from fastapi import BackgroundTasks
+from fastapi import APIRouter, Query
+from datetime import datetime, timedelta
+from typing import Dict, List
+import pandas as pd
+import logging
+from pydantic import BaseModel
+from fastapi import FastAPI, Query
+from fastapi.responses import HTMLResponse, FileResponse
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
+import pandas as pd
+import os
 
+
+#----  --------
+#------------------------------
 ORIGINAL_PRICES = {
     "BAP": 184.88,    # Credicorp
     "BRK-B": 479.20,  # Berkshire Hathaway B
     "ILF": 24.10      # iShares Latin America 40 ETF
 }
+
+# ----------
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO,
@@ -51,6 +71,39 @@ class ProfitabilityData(BaseModel):
     original_price: float
     current_price: float
     profitability_percentage: float
+
+
+# Modelos Pydantic
+class TimeSeriesPoint(BaseModel):
+    timestamp: str
+    price: float
+
+class SymbolTimeSeries(BaseModel):
+    symbol: str
+    data: List[TimeSeriesPoint]
+    period: str
+
+class TimeSeriesResponse(BaseModel):
+    series: List[SymbolTimeSeries]
+    available_periods: List[str] = ["1d", "1w", "1m", "3m"]
+    available_symbols: List[str] = ["BAP", "BRK-B", "ILF"]
+
+class FinancialDataPoint(BaseModel):
+    timestamp: str
+    price: float
+    volume: Optional[float] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
+    dividend_yield: Optional[float] = None
+    profitability: Optional[float] = None
+
+class SymbolFinancialData(BaseModel):
+    symbol: str
+    period: str
+    data: List[FinancialDataPoint]
+    stats: Dict[str, float]
+
+
 
 
 # Creación de la aplicación FastAPI
@@ -241,26 +294,26 @@ def calculate_percentage_change(price_series):
 
 
 def list_available_stocks_internal():
-    """
-    Lista todos los símbolos disponibles (versión interna)
-    """
-    root_path = get_project_root()
-    data_dir = os.path.join(root_path, "data")
-
+    """Lista todos los símbolos disponibles (versión interna)"""
     try:
+        root_path = get_project_root()
+        data_dir = os.path.join(root_path, "data")
         files = [f for f in os.listdir(data_dir) if f.endswith('.csv')]
+
         symbols = []
         for f in files:
-            if f == "brk-b_stock_data.csv":
+            # Mejor manejo de nombres de archivo
+            if f.startswith('brk-b'):
                 symbols.append("BRK-B")
-            elif f.endswith("_etf_data.csv"):
-                symbols.append(f.split('_')[0].upper())
-            elif f.endswith("_stock_data.csv"):  # Asegura que solo procese archivos de stock
-                symbols.append(f.split('_')[0].upper())
-        return symbols
+            else:
+                base_name = f.split('_')[0].upper()
+                if base_name not in symbols:
+                    symbols.append(base_name)
+        return sorted(symbols)
     except Exception as e:
         logger.error(f"Error al listar acciones: {str(e)}")
         return []
+
 
 def get_latest_data(symbol: str) -> Dict:
     """
@@ -271,10 +324,10 @@ def get_latest_data(symbol: str) -> Dict:
     if df is None or df.empty:
         return None
 
-    # Asumimos que el último registro es el más reciente
+    # Get the latest data from the dataframe
     latest_data = df.iloc[-1].to_dict()
 
-    # Reemplazar valores NaN con None para compatibilidad con JSON
+    # Replace NaN values with None for JSON compatibility
     for key, value in latest_data.items():
         if pd.isna(value):
             latest_data[key] = None
@@ -282,7 +335,7 @@ def get_latest_data(symbol: str) -> Dict:
     # IMPORTANT FIX: Always ensure symbol is set correctly from the parameter
     latest_data['symbol'] = symbol
 
-    # Asegurar que las columnas requeridas estén presentes
+    # Make sure required columns are present
     required_columns = ['currentPrice', 'previousClose', 'open', 'dayLow', 'dayHigh',
                         'dividendYield', 'financialCurrency', 'volumen', 'timestamp']
 
@@ -293,6 +346,16 @@ def get_latest_data(symbol: str) -> Dict:
     # Fix data types
     if latest_data['financialCurrency'] is None:
         latest_data['financialCurrency'] = "USD"  # Set a default value
+
+    # Add this fix for currentPrice being None
+    if latest_data['currentPrice'] is None and symbol in ORIGINAL_PRICES:
+        # Use the original price as a fallback
+        latest_data['currentPrice'] = ORIGINAL_PRICES[symbol]
+        logger.warning(f"currentPrice is None for {symbol}, using original price {ORIGINAL_PRICES[symbol]} as fallback")
+    elif latest_data['currentPrice'] is None:
+        # If no original price is available, set a default value
+        latest_data['currentPrice'] = 0.0
+        logger.warning(f"currentPrice is None for {symbol} and no original price found, using 0.0 as fallback")
 
     # Ensure volumen is an integer
     try:
@@ -305,6 +368,7 @@ def get_latest_data(symbol: str) -> Dict:
         latest_data['volumen'] = 0
 
     return latest_data
+
 
 def get_historical_data(symbol: str, days: int = 30) -> List[Dict]:
     """
@@ -337,7 +401,6 @@ def get_historical_data(symbol: str, days: int = 30) -> List[Dict]:
 
     return records
 
-
 # Función para limpiar datos no serializables en JSON
 def clean_json_data(data):
     """
@@ -362,12 +425,9 @@ def clean_json_data(data):
 def read_root():
     return {"message": "BVL Live Tracker API v1.0"}
 
-
 @app.get("/stocks", response_model=List[str])
 def list_available_stocks():
-    """
-    Lista todos los símbolos disponibles
-    """
+    """Lista todos los símbolos disponibles"""
     symbols = list_available_stocks_internal()
     if not symbols:
         raise HTTPException(status_code=500, detail="Error al obtener la lista de acciones")
@@ -376,17 +436,20 @@ def list_available_stocks():
 
 @app.get("/stocks/{symbol}", response_model=StockData)
 def get_stock_data(symbol: str):
-    """
-    Obtiene los datos más recientes para un símbolo específico
-    """
-    data = get_latest_data(symbol)
+    """Obtiene los datos más recientes para un símbolo específico"""
+    # Validación mejorada
+    available_symbols = list_available_stocks_internal()
+    if symbol.upper() not in available_symbols:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Símbolo no válido. Opciones disponibles: {', '.join(available_symbols)}"
+        )
 
+    data = get_latest_data(symbol)
     if data is None:
         raise HTTPException(status_code=404, detail=f"Datos no encontrados para {symbol}")
 
-    # Asegurar que los datos son JSON serializables
     data = clean_json_data(data)
-
     return data
 
 
@@ -412,7 +475,7 @@ def get_stock_chart(symbol: str, field: str, days: int = 30):
     Genera datos para un gráfico de un campo específico
     """
     valid_fields = ['currentPrice', 'previousClose', 'open', 'dayLow', 'dayHigh',
-                    'dividendYield', 'volumen']
+                    'dividendYield', 'volume']
 
     if field not in valid_fields:
         raise HTTPException(status_code=400, detail=f"Campo inválido. Opciones: {', '.join(valid_fields)}")
@@ -722,174 +785,59 @@ def get_continuous_stock_data(
 
     return result
 
-@app.get("/stocks/{symbol}/advanced-chart-data", response_model=Dict[str, Any])
-def get_advanced_chart_data(
-        symbol: str,
-        timeframe: str = "1week",
-        background_tasks: BackgroundTasks = None
+
+@app.get("/api/timeseries", response_model=TimeSeriesResponse)
+async def get_time_series(
+        symbol: str = Query("BAP", description="Símbolo a consultar (BAP, BRK-B, ILF)"),
+        period: str = Query("1w", description="Periodo (1d, 1w, 1m, 3m)"),
+        compare_all: bool = Query(False, description="Mostrar todos los símbolos juntos")
 ):
-    try:
-        # Validar timeframe
-        timeframe_days = {
-            "1day": 1,
-            "1week": 7,
-            "1month": 30,
-            "3months": 90
-        }.get(timeframe)
+    """Obtiene series temporales para diferentes periodos"""
+    periods_map = {
+        "1d": timedelta(days=1),
+        "1w": timedelta(weeks=1),
+        "1m": timedelta(days=30),
+        "3m": timedelta(days=90)
+    }
 
-        if not timeframe_days:
-            raise HTTPException(status_code=400, detail="Timeframe no válido")
+    symbols_to_fetch = ["BAP", "BRK-B", "ILF"] if compare_all else [symbol]
+    end_date = datetime.now()
 
-        # Forzar recarga si es necesario
-        if background_tasks:
-            background_tasks.add_task(load_dataframe, symbol, force_reload=True)
+    result = []
 
-        # Log the symbol we're processing
-        logger.info(f"Processing advanced chart data for symbol: {symbol}")
-
-        # Obtener datos
-        df = load_dataframe(symbol)
-        if df is None or df.empty:
-            raise HTTPException(status_code=404, detail=f"No hay datos disponibles para {symbol}")
-
-        # Log dataframe info for debugging
-        logger.info(f"Original columns for {symbol}: {df.columns.tolist()}")
-        logger.info(f"DataFrame shape for {symbol}: {df.shape}")
-
-        # Check for NaN values in important columns
-        for col in ['timestamp', 'currentPrice']:
-            if col in df.columns:
-                nan_count = df[col].isna().sum()
-                logger.info(f"NaN count in {col} for {symbol}: {nan_count}")
-
-        # General column mapping for all symbols
-        column_mapping = {
-            'Close': 'currentPrice',
-            'Open': 'open',
-            'High': 'dayHigh',
-            'Low': 'dayLow',
-            'Volume': 'volumen',
-            'Date': 'timestamp',
-            'close': 'currentPrice'  # Handle lowercase variants too
-        }
-
-        # Apply mapping for columns that exist
-        for old_col, new_col in column_mapping.items():
-            if old_col in df.columns and new_col not in df.columns:
-                df[new_col] = df[old_col]
-                logger.info(f"Mapped {old_col} to {new_col} for {symbol}")
-
-        # Ensure timestamp column exists and is properly formatted
-        if 'timestamp' not in df.columns:
-            if 'Date' in df.columns:
-                df['timestamp'] = pd.to_datetime(df['Date'])
-                logger.info(f"Created timestamp from Date for {symbol}")
-            else:
-                # Create a timestamp if neither column exists
-                logger.warning(f"No timestamp or Date column found for {symbol}, creating synthetic dates")
-                df['timestamp'] = pd.date_range(end=datetime.now(), periods=len(df))
-
-        # Ensure currentPrice exists
-        if 'currentPrice' not in df.columns:
-            if 'Close' in df.columns:
-                df['currentPrice'] = df['Close']
-                logger.info(f"Created currentPrice from Close for {symbol}")
-            elif 'close' in df.columns:
-                df['currentPrice'] = df['close']
-                logger.info(f"Created currentPrice from close for {symbol}")
-            else:
-                logger.error(f"No price column found for {symbol}")
-                raise HTTPException(status_code=500, detail=f"No price data found for {symbol}")
-
-        # Log min and max values for key columns
-        for col in ['currentPrice', 'open', 'dayHigh', 'dayLow', 'volumen']:
-            if col in df.columns:
-                logger.info(f"{col} range for {symbol}: min={df[col].min()}, max={df[col].max()}")
-
-        # Procesamiento de fechas
+    for sym in symbols_to_fetch:
         try:
+            df = load_dataframe(sym)
+            if df is None or df.empty:
+                continue
+
             df['timestamp'] = pd.to_datetime(df['timestamp'])
-            min_date = df['timestamp'].min()
-            max_date = df['timestamp'].max()
-            logger.info(f"Date range for {symbol}: {min_date} to {max_date}")
+            start_date = end_date - periods_map[period]
+
+            filtered_df = df[(df['timestamp'] >= start_date) & (df['timestamp'] <= end_date)]
+            filtered_df = filtered_df.sort_values('timestamp')
+
+            series_data = [
+                TimeSeriesPoint(
+                    timestamp=row['timestamp'].isoformat(),
+                    price=float(row['currentPrice'])
+                )
+                for _, row in filtered_df.iterrows()
+                if pd.notna(row['currentPrice'])
+            ]
+
+            result.append(SymbolTimeSeries(
+                symbol=sym,
+                data=series_data,
+                period=period
+            ))
+
         except Exception as e:
-            logger.error(f"Error processing timestamps for {symbol}: {str(e)}")
-            # Create a backup timestamp column
-            df['timestamp'] = pd.date_range(end=datetime.now(), periods=len(df))
+            logger.error(f"Error procesando {sym}: {str(e)}")
 
-        df = df.sort_values('timestamp')
+    return TimeSeriesResponse(series=result)
 
-        # Drop rows with NaN in critical columns
-        nan_before = len(df)
-        df = df.dropna(subset=['timestamp', 'currentPrice'])
-        nan_after = len(df)
-        if nan_before != nan_after:
-            logger.warning(f"Dropped {nan_before - nan_after} rows with NaN values for {symbol}")
 
-        # Calcular métricas de rentabilidad
-        if len(df) >= 2:  # Ensure we have at least two rows for pct_change
-            df['daily_return'] = df['currentPrice'].pct_change() * 100
-            df['cumulative_return'] = (df['currentPrice'] / df['currentPrice'].iloc[0] - 1) * 100
-        else:
-            # Handle case with only one data point
-            logger.warning(f"Not enough data points for {symbol} to calculate returns")
-            df['daily_return'] = 0
-            df['cumulative_return'] = 0
-
-        # Limitar a los últimos N días
-        before_filter = len(df)
-        cutoff_date = pd.Timestamp.now() - pd.Timedelta(days=timeframe_days)
-        df = df[df['timestamp'] >= cutoff_date]
-        after_filter = len(df)
-        logger.info(f"Filtered from {before_filter} to {after_filter} rows for {symbol} by date")
-
-        # Limpieza final
-        df = df.ffill().bfill().fillna(0)
-
-        # Log final dataframe shape
-        logger.info(f"Final dataframe for {symbol} has shape {df.shape}")
-
-        # Check if we have any data left
-        if df.empty:
-            logger.error(f"No data remains for {symbol} after filtering")
-            raise HTTPException(status_code=404,
-                                detail=f"No hay datos en el rango de tiempo seleccionado para {symbol}")
-
-        # Ensure all numeric columns are float
-        numeric_cols = ['currentPrice', 'open', 'dayHigh', 'dayLow', 'daily_return', 'cumulative_return']
-        for col in numeric_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-
-        # Preparar respuesta
-        response = {
-            "symbol": symbol.upper(),
-            "timestamps": df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S').tolist(),
-            "prices": {
-                "close": df['currentPrice'].tolist(),
-                "open": df.get('open', df['currentPrice']).tolist(),
-                "high": df.get('dayHigh', df['currentPrice']).tolist(),
-                "low": df.get('dayLow', df['currentPrice']).tolist(),
-                "daily_returns": df['daily_return'].tolist(),
-                "cumulative_returns": df['cumulative_return'].tolist()
-            },
-            "volume": df.get('volumen', [0] * len(df)).tolist(),
-            "last_close": float(df['currentPrice'].iloc[-1]) if len(df) > 0 else 0,
-            "percentage_change": calculate_percentage_change(df['currentPrice']),
-            "currency": "USD",
-            "timeframe": timeframe
-        }
-
-        # Log data points in response
-        logger.info(f"Response for {symbol} contains {len(response['timestamps'])} data points")
-
-        return response
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error procesando datos para {symbol}: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error interno procesando datos para {symbol}")
 
 @app.post("/refresh")
 def refresh_data(background_tasks: BackgroundTasks):
@@ -972,17 +920,15 @@ async def get_stock_chart_html():
     return FileResponse(os.path.join(static_dir, "stock_chart.html"))
 
 
-@app.get("/html/stocks/{symbol}/chart/{field}")
-async def get_stock_chart_html(symbol: str, field: str):
-    return FileResponse(os.path.join(static_dir, "stock_chart.html"))
-
-
 @app.get("/html/compare")
 async def get_compare_stocks_html():
     """
     Sirve la página HTML para comparar stocks.
     """
     return FileResponse(os.path.join(static_dir, "compare_stocks.html"))
+
+
+#-----------PROFITABILITY------------------
 
 @app.get("/html/portfolio/profitability")
 async def get_portfolio_profitability_html():
@@ -998,9 +944,25 @@ async def get_symbol_profitability_html(symbol: str):
     """
     return FileResponse(os.path.join(static_dir, "symbol_profitability.html"))
 
-@app.get("/html/stocks/{symbol}/advanced-chart")
-async def serve_advanced_chart(symbol: str):
-    return FileResponse(os.path.join(static_dir, "advanced_chart.html"))
+
+
+#---PLOTS
+
+
+@app.get("/html/stocks/{symbol}/chart/{field}")
+async def get_stock_chart_html(symbol: str, field: str):
+    return FileResponse(os.path.join(static_dir, "stock_chart.html"))
+
+@app.get("/timeseries", response_class=HTMLResponse)
+async def serve_timeseries_html():
+    """Endpoint que sirve la interfaz de visualización"""
+    file_path = os.path.join(static_dir, "timeseries.html")
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Interfaz no encontrada")
+    return FileResponse(file_path)
+
+
+
 
 @app.get("/html")
 async def get_html_index():

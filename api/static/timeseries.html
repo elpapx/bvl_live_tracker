@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Series Temporales BVL</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luxon@3.0.1"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.2.0"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@1.2.1"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f7fa;
+            color: #333;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin-bottom: 20px;
+            justify-content: center;
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            min-width: 200px;
+        }
+        label {
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #2c3e50;
+        }
+        select, button {
+            padding: 10px 15px;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+            font-size: 16px;
+        }
+        button {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #2980b9;
+        }
+        .chart-container {
+            position: relative;
+            height: 500px;
+            width: 100%;
+            margin-top: 20px;
+        }
+        .loading {
+            text-align: center;
+            padding: 20px;
+            font-style: italic;
+            color: #7f8c8d;
+        }
+        .period-selector {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+        .period-btn {
+            padding: 8px 16px;
+            background: #ecf0f1;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .period-btn.active {
+            background: #3498db;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Análisis de Series Temporales</h1>
+
+        <div class="controls">
+            <div class="control-group">
+                <label for="symbol">Símbolo:</label>
+                <select id="symbol">
+                    <option value="BAP">BAP - Credicorp</option>
+                    <option value="BRK-B">BRK-B - Berkshire Hathaway</option>
+                    <option value="ILF">ILF - iShares Latin America</option>
+                </select>
+            </div>
+
+            <div class="control-group">
+                <label for="compare">Modo:</label>
+                <select id="compare">
+                    <option value="false">Individual</option>
+                    <option value="true">Comparar Todos</option>
+                </select>
+            </div>
+
+            <button onclick="loadData()">Cargar Datos</button>
+        </div>
+
+        <div class="period-selector">
+            <button class="period-btn active" onclick="changePeriod('1d')">1 Día</button>
+            <button class="period-btn" onclick="changePeriod('1w')">1 Semana</button>
+            <button class="period-btn" onclick="changePeriod('1m')">1 Mes</button>
+            <button class="period-btn" onclick="changePeriod('3m')">3 Meses</button>
+        </div>
+
+        <div id="loading" class="loading">Cargando datos...</div>
+        <div id="error" style="color: #e74c3c; text-align: center; display: none;"></div>
+
+        <div class="chart-container">
+            <canvas id="priceChart"></canvas>
+        </div>
+    </div>
+
+    <script>
+        let priceChart;
+        let currentPeriod = '1w';
+        const colors = {
+            'BAP': '#3498db',
+            'BRK-B': '#2ecc71',
+            'ILF': '#e74c3c'
+        };
+
+        function changePeriod(period) {
+            currentPeriod = period;
+            document.querySelectorAll('.period-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.textContent.includes(period.replace('1d', '1 Día').replace('1w', '1 Semana').replace('1m', '1 Mes').replace('3m', '3 Meses')));
+            });
+            loadData();
+        }
+
+        async function loadData() {
+            const symbol = document.getElementById('symbol').value;
+            const compareAll = document.getElementById('compare').value === 'true';
+
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('error').style.display = 'none';
+
+            try {
+                const response = await fetch(`/api/timeseries?symbol=${symbol}&period=${currentPeriod}&compare_all=${compareAll}`);
+                if (!response.ok) throw new Error('Error al cargar datos');
+
+                const data = await response.json();
+                renderChart(data);
+            } catch (error) {
+                console.error('Error:', error);
+                document.getElementById('error').textContent = `Error: ${error.message}`;
+                document.getElementById('error').style.display = 'block';
+            } finally {
+                document.getElementById('loading').style.display = 'none';
+            }
+        }
+
+        function renderChart(apiData) {
+            const ctx = document.getElementById('priceChart').getContext('2d');
+
+            if (priceChart) {
+                priceChart.destroy();
+            }
+
+            const datasets = apiData.series.map(series => {
+                return {
+                    label: `${series.symbol} (${translatePeriod(series.period)})`,
+                    data: series.data.map(point => ({
+                        x: point.timestamp,
+                        y: point.price
+                    })),
+                    borderColor: colors[series.symbol],
+                    backgroundColor: colors[series.symbol] + '20',
+                    borderWidth: 2,
+                    pointRadius: 2,
+                    tension: 0.1,
+                    fill: false
+                };
+            });
+
+            priceChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        zoom: {
+                            zoom: {
+                                wheel: {
+                                    enabled: true
+                                },
+                                pinch: {
+                                    enabled: true
+                                },
+                                mode: 'xy'
+                            },
+                            pan: {
+                                enabled: true,
+                                mode: 'xy'
+                            }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return `${context.dataset.label}: $${context.parsed.y.toFixed(2)}`;
+                                }
+                            }
+                        },
+                        legend: {
+                            position: 'top'
+                        }
+                    },
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: getTimeUnit(currentPeriod),
+                                tooltipFormat: 'dd/MM/yyyy HH:mm'
+                            },
+                            title: {
+                                display: true,
+                                text: 'Fecha y Hora'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Precio (USD)'
+                            },
+                            ticks: {
+                                callback: function(value) {
+                                    return '$' + value.toFixed(2);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function translatePeriod(period) {
+            const translations = {
+                '1d': '1 Día',
+                '1w': '1 Semana',
+                '1m': '1 Mes',
+                '3m': '3 Meses'
+            };
+            return translations[period] || period;
+        }
+
+        function getTimeUnit(period) {
+            if (period === '1d') return 'hour';
+            if (period === '1w') return 'day';
+            return 'month';
+        }
+
+        // Cargar datos iniciales al abrir la página
+        document.addEventListener('DOMContentLoaded', loadData);
+    </script>
+</body>
+</html>

@@ -47,12 +47,24 @@ class ScraperConfig:
         },
         "ILF": {
             "columns": [
-                "previousClose", "open", "dayLow", "dayHigh",
-                "volume", "regularMarketVolume", "averageVolume", "averageVolume10days",
-                "bid", "ask", "dividendYield", 'volume'
+                "currentPrice",
+                "previousClose",
+                "open",
+                "dayLow",
+                "dayHigh",
+                # Cambiar "volume" por "volumen" 👇
+                "volumen",  # Nombre personalizado para el CSV
+                "regularMarketVolume",
+                "averageVolume",
+                "averageVolume10days",
+                "bid",
+                "ask",
+                "dividendYield"
             ],
             "filename": "ilf_etf_data.csv",
-            "is_etf": True
+            "is_etf": True,
+            # Añadir mapeo de campos especiales 👇
+            "field_mapping": {"volume": "volumen"}  # Mapeo de Yahoo Finance -> CSV
         }
     }
 
@@ -87,35 +99,49 @@ class DataScraper:
             self.logger.info(f"Iniciando scraping para {symbol}")
             ticker = yf.Ticker(symbol)
             data = {}
+            field_mapping = config.get("field_mapping", {})
 
             if config.get("is_etf", False):
                 self.logger.debug(f"{symbol} es un ETF, usando metodo especial")
                 history = ticker.history(period="1d")
-                if not history.empty:
-                    data["currentPrice"] = history["Close"].iloc[-1]
-                    self.logger.debug(f"Precio actual obtenido: {data['currentPrice']}")
 
+                # 1. Obtener currentPrice desde el historial
+                data["currentPrice"] = history["Close"].iloc[-1] if not history.empty else None
+                self.logger.debug(f"Precio actual obtenido: {data['currentPrice']}")
+
+                # 2. Procesar el volumen desde el historial (si está configurado)
+                if "volumen" in config["columns"] or "volume" in config["columns"]:
+                    data["volumen"] = history["Volume"].iloc[-1] if not history.empty else None
+                    self.logger.debug(f"Volumen obtenido: {data['volumen']}")
+
+                # 3. Procesar el resto de campos desde ticker.info
                 info = ticker.info
                 for key in config["columns"]:
-                    data[key] = info.get(key, None)
-                    self.logger.debug(f"{key}: {data[key]}")
-            else:
+                    if key in ["currentPrice", "volumen"]:  # Campos ya asignados
+                        continue
+
+                    # Mapeo CORRECTO: Yahoo Finance → CSV
+                    csv_key = key  # Ej: "dividendYield"
+                    yahoo_key = field_mapping.get(key, key)  # Ej: "volume" → "volumen"
+
+                    data[csv_key] = info.get(yahoo_key, None)
+                    self.logger.debug(f"{csv_key} (desde Yahoo '{yahoo_key}'): {data[csv_key]}")
+
+            else:  # Para acciones (no-ETF)
                 self.logger.debug(f"{symbol} es una accion, usando metodo estandar")
                 info = ticker.info
                 for key in config["columns"]:
                     data[key] = info.get(key, None)
                     self.logger.debug(f"{key}: {data[key]}")
 
+            # Campos comunes
             data["symbol"] = symbol
             data["timestamp"] = pd.Timestamp.now()
-
-            self.logger.info(f"Datos obtenidos exitosamente para {symbol}")
             return data
 
         except Exception as e:
             self.logger.error(f"Error al obtener datos de {symbol}: {str(e)}", exc_info=True)
             return None
-
     def save_to_csv(self, data: Dict, filename: str) -> None:
         """Guarda los datos en CSV"""
         if data is None:
