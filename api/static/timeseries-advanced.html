@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard de Series Temporales Financieras</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chart.js/3.9.1/chart.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.4/moment.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.4/locale/es.min.js"></script>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-light: #3b82f6;
+            --secondary: #059669;
+            --dark: #1e293b;
+            --light: #f8fafc;
+            --danger: #dc2626;
+            --success: #16a34a;
+            --warning: #ca8a04;
+            --gray: #64748b;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        body {
+            background-color: #f1f5f9;
+            color: var(--dark);
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background-color: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            color: var(--primary);
+            margin-bottom: 10px;
+        }
+
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+        }
+
+        select, input[type="checkbox"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: white;
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+        }
+
+        .checkbox-group input {
+            width: auto;
+            margin-right: 10px;
+        }
+
+        button {
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: background-color 0.3s;
+        }
+
+        button:hover {
+            background-color: var(--primary-light);
+        }
+
+        .charts-container {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 20px;
+        }
+
+        .chart-card {
+            background-color: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .stats-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .stat-card {
+            background-color: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            padding: 15px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: 700;
+            margin: 10px 0;
+        }
+
+        .positive {
+            color: var(--success);
+        }
+
+        .negative {
+            color: var(--danger);
+        }
+
+        .stat-label {
+            font-size: 14px;
+            color: var(--gray);
+        }
+
+        .loading {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 200px;
+        }
+
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border-left-color: var(--primary);
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error-message {
+            background-color: #fee2e2;
+            color: var(--danger);
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+
+        @media (max-width: 768px) {
+            .controls {
+                grid-template-columns: 1fr;
+            }
+
+            .stats-container {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Dashboard de Series Temporales Financieras</h1>
+            <div class="controls">
+                <div class="form-group">
+                    <label for="symbol">Símbolo:</label>
+                    <select id="symbol">
+                        <option value="BAP">BAP</option>
+                        <option value="BRK-B">BRK-B</option>
+                        <option value="ILF">ILF</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="period">Periodo:</label>
+                    <select id="period">
+                        <option value="1h">1 hora</option>
+                        <option value="1d" selected>1 día</option>
+                        <option value="1w">1 semana</option>
+                        <option value="1m">1 mes</option>
+                        <option value="3m">3 meses</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="compare-all">
+                        <label for="compare-all">Comparar todos los símbolos</label>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="aggregate">
+                        <label for="aggregate">Agregar datos</label>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <button id="fetch-data">Actualizar datos</button>
+                </div>
+            </div>
+        </header>
+
+        <div id="error-container"></div>
+
+        <div class="chart-card">
+            <h2>Precios</h2>
+            <div id="price-chart-container">
+                <canvas id="price-chart"></canvas>
+            </div>
+        </div>
+
+        <div class="chart-card">
+            <h2>Rentabilidad</h2>
+            <div id="profitability-chart-container">
+                <canvas id="profitability-chart"></canvas>
+            </div>
+        </div>
+
+        <div class="chart-card">
+            <h2>Volumen</h2>
+            <div id="volume-chart-container">
+                <canvas id="volume-chart"></canvas>
+            </div>
+        </div>
+
+        <div id="stats-section"></div>
+    </div>
+
+    <script>
+        // Configuración inicial
+        let priceChart, profitabilityChart, volumeChart;
+        const colors = [
+            '#2563eb', // blue
+            '#059669', // green
+            '#dc2626', // red
+            '#ca8a04', // yellow
+            '#7c3aed', // purple
+            '#0891b2'  // cyan
+        ];
+
+        // Inicialización de los charts
+        function initCharts() {
+            const priceCtx = document.getElementById('price-chart').getContext('2d');
+            priceChart = new Chart(priceCtx, {
+                type: 'line',
+                data: {
+                    datasets: []
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return `${context.dataset.label}: $${context.raw.y.toFixed(2)}`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                tooltipFormat: 'DD MMM YYYY HH:mm',
+                                displayFormats: {
+                                    millisecond: 'HH:mm:ss.SSS',
+                                    second: 'HH:mm:ss',
+                                    minute: 'HH:mm',
+                                    hour: 'DD MMM HH:mm',
+                                    day: 'DD MMM',
+                                    week: 'DD MMM',
+                                    month: 'MMM YYYY',
+                                    quarter: 'MMM YYYY',
+                                    year: 'YYYY'
+                                }
+                            },
+                            title: {
+                                display: true,
+                                text: 'Fecha'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Precio ($)'
+                            }
+                        }
+                    }
+                }
+            });
+
+            const profitabilityCtx = document.getElementById('profitability-chart').getContext('2d');
+            profitabilityChart = new Chart(profitabilityCtx, {
+                type: 'line',
+                data: {
+                    datasets: []
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return `${context.dataset.label}: ${context.raw.y.toFixed(2)}%`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                tooltipFormat: 'DD MMM YYYY HH:mm',
+                                displayFormats: {
+                                    millisecond: 'HH:mm:ss.SSS',
+                                    second: 'HH:mm:ss',
+                                    minute: 'HH:mm',
+                                    hour: 'DD MMM HH:mm',
+                                    day: 'DD MMM',
+                                    week: 'DD MMM',
+                                    month: 'MMM YYYY',
+                                    quarter: 'MMM YYYY',
+                                    year: 'YYYY'
+                                }
+                            },
+                            title: {
+                                display: true,
+                                text: 'Fecha'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Rentabilidad (%)'
+                            }
+                        }
+                    }
+                }
+            });
+
+            const volumeCtx = document.getElementById('volume-chart').getContext('2d');
+            volumeChart = new Chart(volumeCtx, {
+                type: 'bar',
+                data: {
+                    datasets: []
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return `${context.dataset.label}: ${formatNumber(context.raw.y)}`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                tooltipFormat: 'DD MMM YYYY HH:mm',
+                                displayFormats: {
+                                    millisecond: 'HH:mm:ss.SSS',
+                                    second: 'HH:mm:ss',
+                                    minute: 'HH:mm',
+                                    hour: 'DD MMM HH:mm',
+                                    day: 'DD MMM',
+                                    week: 'DD MMM',
+                                    month: 'MMM YYYY',
+                                    quarter: 'MMM YYYY',
+                                    year: 'YYYY'
+                                }
+                            },
+                            title: {
+                                display: true,
+                                text: 'Fecha'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Volumen'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Función para formatear números grandes
+        function formatNumber(num) {
+            if (num === null || num === undefined) return 'N/A';
+
+            if (num >= 1000000) {
+                return (num / 1000000).toFixed(2) + 'M';
+            } else if (num >= 1000) {
+                return (num / 1000).toFixed(2) + 'K';
+            } else {
+                return num.toFixed(2);
+            }
+        }
+
+        // Función para formatear porcentajes
+        function formatPercentage(num) {
+            if (num === null || num === undefined) return 'N/A';
+            return num.toFixed(2) + '%';
+        }
+
+        // Función para formatear precios
+        function formatPrice(num) {
+            if (num === null || num === undefined) return 'N/A';
+            return '$' + num.toFixed(2);
+        }
+
+        // Mostrar mensaje de error
+        function showError(message) {
+            const errorContainer = document.getElementById('error-container');
+            errorContainer.innerHTML = `<div class="error-message">${message}</div>`;
+        }
+
+        // Limpiar mensaje de error
+        function clearError() {
+            document.getElementById('error-container').innerHTML = '';
+        }
+
+        // Mostrar spinner de carga
+        function showLoading(containerId) {
+            const container = document.getElementById(containerId);
+            container.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+        }
+
+        // Actualizar las estadísticas
+        function updateStats(data) {
+            const statsSection = document.getElementById('stats-section');
+            statsSection.innerHTML = '';
+
+            data.forEach(symbolData => {
+                const stats = symbolData.stats;
+                const symbol = symbolData.symbol;
+
+                const statsCard = document.createElement('div');
+                statsCard.className = 'chart-card';
+                statsCard.innerHTML = `
+                    <h2>Estadísticas - ${symbol}</h2>
+                    <div class="stats-container">
+                        <div class="stat-card">
+                            <div class="stat-label">Precio de apertura</div>
+                            <div class="stat-value">${formatPrice(stats.open_price)}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Precio de cierre</div>
+                            <div class="stat-value">${formatPrice(stats.close_price)}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Precio más alto</div>
+                            <div class="stat-value">${formatPrice(stats.high_price)}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Precio más bajo</div>
+                            <div class="stat-value">${formatPrice(stats.low_price)}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Precio promedio</div>
+                            <div class="stat-value">${formatPrice(stats.avg_price)}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Cambio en precio</div>
+                            <div class="stat-value ${stats.price_change >= 0 ? 'positive' : 'negative'}">
+                                ${formatPrice(stats.price_change)}
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Cambio porcentual</div>
+                            <div class="stat-value ${stats.price_change_percentage >= 0 ? 'positive' : 'negative'}">
+                                ${formatPercentage(stats.price_change_percentage)}
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Volumen total</div>
+                            <div class="stat-value">${formatNumber(stats.total_volume)}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Volumen promedio</div>
+                            <div class="stat-value">${formatNumber(stats.avg_volume)}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Rentabilidad desde origen</div>
+                            <div class="stat-value ${stats.profitability_from_original >= 0 ? 'positive' : 'negative'}">
+                                ${formatPercentage(stats.profitability_from_original)}
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Precio original</div>
+                            <div class="stat-value">${formatPrice(stats.original_price)}</div>
+                        </div>
+                        ${stats.volatility ? `
+                        <div class="stat-card">
+                            <div class="stat-label">Volatilidad</div>
+                            <div class="stat-value">${formatPrice(stats.volatility)}</div>
+                        </div>
+                        ` : ''}
+                        ${stats.data_points ? `
+                        <div class="stat-card">
+                            <div class="stat-label">Puntos de datos</div>
+                            <div class="stat-value">${stats.data_points}</div>
+                        </div>
+                        ` : ''}
+                    </div>
+                `;
+
+                statsSection.appendChild(statsCard);
+            });
+        }
+
+        // Actualizar los gráficos con nuevos datos
+        function updateCharts(data) {
+            // Limpiar los gráficos anteriores
+            priceChart.data.datasets = [];
+            profitabilityChart.data.datasets = [];
+            volumeChart.data.datasets = [];
+
+            // Procesar cada símbolo
+            data.forEach((symbolData, index) => {
+                const color = colors[index % colors.length];
+                const symbol = symbolData.symbol;
+
+                // Datos para el gráfico de precios
+                const priceData = symbolData.data.map(point => ({
+                    x: new Date(point.timestamp),
+                    y: point.price
+                }));
+
+                priceChart.data.datasets.push({
+                    label: symbol,
+                    data: priceData,
+                    borderColor: color,
+                    backgroundColor: color + '33',
+                    borderWidth: 2,
+                    pointRadius: 1,
+                    pointHoverRadius: 5,
+                    tension: 0.1
+                });
+
+                // Datos para el gráfico de rentabilidad
+                const profitabilityData = symbolData.data.map(point => ({
+                    x: new Date(point.timestamp),
+                    y: point.profitability
+                }));
+
+                profitabilityChart.data.datasets.push({
+                    label: symbol,
+                    data: profitabilityData,
+                    borderColor: color,
+                    backgroundColor: color + '33',
+                    borderWidth: 2,
+                    pointRadius: 1,
+                    pointHoverRadius: 5,
+                    tension: 0.1
+                });
+
+                // Datos para el gráfico de volumen (si existe)
+                if (symbolData.data[0].volume !== null) {
+                    const volumeData = symbolData.data.map(point => ({
+                        x: new Date(point.timestamp),
+                        y: point.volume
+                    }));
+
+                    volumeChart.data.datasets.push({
+                        label: symbol,
+                        data: volumeData,
+                        backgroundColor: color + '88',
+                        borderColor: color,
+                        borderWidth: 1
+                    });
+                }
+            });
+
+            // Actualizar los gráficos
+            priceChart.update();
+            profitabilityChart.update();
+            volumeChart.update();
+        }
+
+        // Función para obtener datos de la API
+        async function fetchTimeSeriesData() {
+            const symbol = document.getElementById('symbol').value;
+            const period = document.getElementById('period').value;
+            const compareAll = document.getElementById('compare-all').checked;
+            const aggregate = document.getElementById('aggregate').checked;
+
+            clearError();
+
+            // Mostrar loading en los contenedores de gráficos
+            showLoading('price-chart-container');
+            showLoading('profitability-chart-container');
+            showLoading('volume-chart-container');
+            document.getElementById('stats-section').innerHTML = '';
+
+            try {
+                // Construir la URL con los parámetros
+                const url = `/api/timeseries/v2?symbol=${symbol}&period=${period}&compare_all=${compareAll}&aggregate=${aggregate}`;
+
+                const response = await fetch(url);
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || 'Error al obtener datos');
+                }
+
+                const data = await response.json();
+
+                // Verificar si hay datos
+                if (!data || data.length === 0) {
+                    throw new Error('No se encontraron datos para los parámetros seleccionados');
+                }
+
+                // Actualizar gráficos y estadísticas
+                updateCharts(data);
+                updateStats(data);
+
+            } catch (error) {
+                // Mostrar mensaje de error
+                showError(error.message);
+
+                // Restablecer los gráficos
+                priceChart.data.datasets = [];
+                profitabilityChart.data.datasets = [];
+                volumeChart.data.datasets = [];
+
+                priceChart.update();
+                profitabilityChart.update();
+                volumeChart.update();
+
+                console.error('Error:', error);
+            }
+        }
+
+        // Inicializar la aplicación cuando el DOM esté listo
+        document.addEventListener('DOMContentLoaded', function() {
+            // Inicializar los gráficos
+            initCharts();
+
+            // Event listener para el botón de actualizar
+            document.getElementById('fetch-data').addEventListener('click', fetchTimeSeriesData);
+
+            // Event listener para la casilla de comparar todos
+            document.getElementById('compare-all').addEventListener('change', function() {
+                const symbolSelect = document.getElementById('symbol');
+                symbolSelect.disabled = this.checked;
+            });
+
+            // Cargar datos iniciales
+            fetchTimeSeriesData();
+        });
+    </script>
+</body>
+</html>

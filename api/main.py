@@ -77,16 +77,20 @@ class ProfitabilityData(BaseModel):
 class TimeSeriesPoint(BaseModel):
     timestamp: str
     price: float
+    return_percentage: Optional[float] = None
 
 class SymbolTimeSeries(BaseModel):
     symbol: str
     data: List[TimeSeriesPoint]
     period: str
+    current_price: Optional[float] = None
+    current_profitability: Optional[float] = None
 
 class TimeSeriesResponse(BaseModel):
     series: List[SymbolTimeSeries]
     available_periods: List[str] = ["1d", "1w", "1m", "3m"]
     available_symbols: List[str] = ["BAP", "BRK-B", "ILF"]
+
 
 class FinancialDataPoint(BaseModel):
     timestamp: str
@@ -837,8 +841,101 @@ async def get_time_series(
 
     return TimeSeriesResponse(series=result)
 
+@app.get("/api/timeseries-with-profitability", response_model=TimeSeriesResponse)
+async def get_time_series_with_profitability(
+        symbol: str = Query("BAP", description="Símbolo a consultar (BAP, BRK-B, ILF)"),
+        period: str = Query("1w", description="Periodo (1d, 1w, 1m, 3m)"),
+        compare_all: bool = Query(False, description="Mostrar todos los símbolos juntos")
+):
+    """Obtiene series temporales con información de rentabilidad"""
+    periods_map = {
+        "1d": timedelta(days=1),
+        "1w": timedelta(weeks=1),
+        "1m": timedelta(days=30),
+        "3m": timedelta(days=90)
+    }
 
+    symbols_to_fetch = ["BAP", "BRK-B", "ILF"] if compare_all else [symbol]
+    end_date = datetime.now()
 
+    logger.info(f"Procesando símbolos: {symbols_to_fetch}, período: {period}")
+    result = []
+
+    for sym in symbols_to_fetch:
+        try:
+            logger.debug(f"Cargando datos para {sym}")
+            df = load_dataframe(sym)
+
+            if df is None or df.empty:
+                logger.warning(f"No hay datos disponibles para {sym}")
+                continue
+
+            # Asegúrate de que la columna timestamp es datetime
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            start_date = end_date - periods_map[period]
+
+            # Filtrar y ordenar datos por fecha
+            filtered_df = df[(df['timestamp'] >= start_date) & (df['timestamp'] <= end_date)]
+            filtered_df = filtered_df.sort_values('timestamp')
+
+            if filtered_df.empty:
+                logger.warning(f"No hay datos para {sym} en el período {period}")
+                continue
+
+            # Obtener el precio original para calcular rentabilidad
+            original_price = ORIGINAL_PRICES.get(sym)
+            if original_price is None:
+                logger.warning(f"No hay precio original definido para {sym}")
+                original_price = filtered_df['currentPrice'].iloc[0] if not filtered_df.empty else None
+
+            logger.debug(f"Precio original para {sym}: {original_price}")
+
+            # Crear puntos de datos de serie temporal
+            series_data = []
+            for _, row in filtered_df.iterrows():
+                if pd.notna(row['currentPrice']):
+                    price = float(row['currentPrice'])
+
+                    # Calcular el porcentaje de retorno
+                    return_pct = None
+                    if original_price is not None and original_price > 0:
+                        return_pct = ((price - original_price) / original_price) * 100
+
+                    point = TimeSeriesPoint(
+                        timestamp=row['timestamp'].isoformat(),
+                        price=price,
+                        return_percentage=return_pct
+                    )
+                    series_data.append(point)
+
+            # Obtener el último precio para mostrar en la respuesta
+            last_price = None
+            current_profitability = None
+
+            if series_data:
+                last_price = series_data[-1].price
+                if original_price is not None and original_price > 0:
+                    current_profitability = ((last_price - original_price) / original_price) * 100
+
+            # Crear la serie para este símbolo
+            symbol_series = SymbolTimeSeries(
+                symbol=sym,
+                data=series_data,
+                period=period,
+                current_price=last_price,
+                current_profitability=current_profitability
+            )
+
+            result.append(symbol_series)
+            logger.debug(f"Procesados {len(series_data)} puntos para {sym}")
+
+        except Exception as e:
+            logger.error(f"Error procesando {sym}: {str(e)}", exc_info=True)
+
+    if not result:
+        logger.warning("No se encontraron datos para ningún símbolo")
+
+    return TimeSeriesResponse(series=result)
 @app.post("/refresh")
 def refresh_data(background_tasks: BackgroundTasks):
     """
@@ -962,7 +1059,10 @@ async def serve_timeseries_html():
     return FileResponse(file_path)
 
 
-
+@app.get("/html/timeseries-profitability", response_class=HTMLResponse)
+async def get_timeseries_profitability_html():
+    """Sirve la interfaz de análisis completo"""
+    return FileResponse(os.path.join(static_dir, "timeseries-profitability.html"))
 
 @app.get("/html")
 async def get_html_index():

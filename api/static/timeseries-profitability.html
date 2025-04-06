@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Análisis Completo de Acciones</title>
+    <!-- Agregar los adaptadores de fecha para Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/moment"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .header {
+            text-align: center;
+            padding: 20px;
+            background: white;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .controls {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 15px;
+        }
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .chart-container {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .stats-container {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+        }
+        .stats-card {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+        }
+        .symbol-title {
+            font-weight: bold;
+            margin-bottom: 10px;
+            font-size: 18px;
+        }
+        .stats-list {
+            list-style-type: none;
+            padding: 0;
+            margin: 0;
+        }
+        .stats-list li {
+            margin-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+        }
+        .stats-label {
+            font-weight: 500;
+        }
+        .positive {
+            color: #2ecc71;
+        }
+        .negative {
+            color: #e74c3c;
+        }
+        canvas {
+            max-height: 500px;
+        }
+        select, button {
+            padding: 8px 12px;
+            border-radius: 5px;
+            border: 1px solid #ddd;
+        }
+        button {
+            background: #3498db;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #2980b9;
+        }
+        .error-message {
+            background-color: #f8d7da;
+            color: #721c24;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 15px 0;
+            display: none;
+        }
+        .loading {
+            text-align: center;
+            padding: 20px;
+        }
+        .checkbox-container {
+            display: flex;
+            gap: 15px;
+            margin-top: 10px;
+            flex-wrap: wrap;
+        }
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Análisis Completo de Acciones</h1>
+        <p>Visualización de series temporales</p>
+    </div>
+
+    <div class="controls">
+        <div class="control-group">
+            <label>Período:</label>
+            <select id="period">
+                <option value="1d">1 Día</option>
+                <option value="1w" selected>1 Semana</option>
+                <option value="1m">1 Mes</option>
+                <option value="3m">3 Meses</option>
+            </select>
+        </div>
+
+        <div>
+            <label>Seleccionar acciones:</label>
+            <div class="checkbox-container">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="symbol-BAP" value="BAP" checked>
+                    <label for="symbol-BAP">BAP - Credicorp</label>
+                </div>
+                <div class="checkbox-group">
+                    <input type="checkbox" id="symbol-BRK-B" value="BRK-B">
+                    <label for="symbol-BRK-B">BRK-B - Berkshire Hathaway</label>
+                </div>
+                <div class="checkbox-group">
+                    <input type="checkbox" id="symbol-ILF" value="ILF">
+                    <label for="symbol-ILF">ILF - iShares Latin America</label>
+                </div>
+            </div>
+        </div>
+
+        <button onclick="updateCharts()">Actualizar</button>
+    </div>
+
+    <div id="errorMessage" class="error-message"></div>
+    <div id="loading" class="loading" style="display: none;">Cargando datos...</div>
+
+    <div class="chart-container">
+        <h3>Evolución de Precios</h3>
+        <canvas id="priceChart"></canvas>
+    </div>
+
+    <div class="stats-container">
+        <h3>Estadísticas de Acciones</h3>
+        <div id="statsGrid" class="stats-grid"></div>
+    </div>
+
+    <script>
+        let priceChart;
+        const colors = {
+            'BAP': '#3498db',
+            'BRK-B': '#2ecc71',
+            'ILF': '#e74c3c'
+        };
+
+        function getSelectedSymbols() {
+            const symbols = [];
+            if (document.getElementById('symbol-BAP').checked) symbols.push('BAP');
+            if (document.getElementById('symbol-BRK-B').checked) symbols.push('BRK-B');
+            if (document.getElementById('symbol-ILF').checked) symbols.push('ILF');
+            return symbols;
+        }
+
+        async function updateCharts() {
+            const period = document.getElementById('period').value;
+            const selectedSymbols = getSelectedSymbols();
+
+            if (selectedSymbols.length === 0) {
+                showError('Por favor seleccione al menos una acción');
+                return;
+            }
+
+            // Mostrar indicador de carga
+            document.getElementById('loading').style.display = 'block';
+
+            // Ocultar mensaje de error previo
+            document.getElementById('errorMessage').style.display = 'none';
+
+            try {
+                console.log('Solicitando datos:', {
+                    symbol: selectedSymbols[0],
+                    period: period,
+                    compare_all: true
+                });
+
+                const response = await axios.get('/api/timeseries-with-profitability', {
+                    params: {
+                        symbol: selectedSymbols[0],
+                        period: period,
+                        compare_all: true
+                    }
+                });
+
+                console.log('Datos recibidos:', response.data);
+
+                if (!response.data || !response.data.series || response.data.series.length === 0) {
+                    throw new Error('No se recibieron datos válidos del servidor');
+                }
+
+                // Filtrar solo las series seleccionadas
+                const filteredSeries = response.data.series.filter(serie =>
+                    selectedSymbols.includes(serie.symbol));
+
+                // Verificar si cada serie tiene datos
+                for (const serie of filteredSeries) {
+                    console.log(`Serie ${serie.symbol}:`, serie);
+                    if (!serie.data || serie.data.length === 0) {
+                        console.warn(`La serie ${serie.symbol} no tiene datos`);
+                    }
+                }
+
+                renderPriceChart(filteredSeries);
+                renderStats(filteredSeries);
+            } catch (error) {
+                console.error('Error al cargar datos:', error);
+
+                let errorMsg = 'Error al cargar los datos: ';
+
+                if (error.response) {
+                    // El servidor respondió con un código de estado fuera del rango 2xx
+                    console.error('Error de respuesta:', error.response.data);
+                    console.error('Estado HTTP:', error.response.status);
+                    errorMsg += `${error.response.status} - ${error.response.data.detail || 'Error del servidor'}`;
+                } else if (error.request) {
+                    // La solicitud se realizó pero no se recibió respuesta
+                    console.error('Sin respuesta del servidor');
+                    errorMsg += 'No se recibió respuesta del servidor';
+                } else {
+                    // Error al configurar la solicitud
+                    console.error('Error de configuración:', error.message);
+                    errorMsg += error.message;
+                }
+
+                showError(errorMsg);
+                clearCharts();
+            } finally {
+                // Ocultar indicador de carga
+                document.getElementById('loading').style.display = 'none';
+            }
+        }
+
+        function showError(message) {
+            const errorElement = document.getElementById('errorMessage');
+            errorElement.textContent = message;
+            errorElement.style.display = 'block';
+        }
+
+        function clearCharts() {
+            // Limpiar estadísticas
+            document.getElementById('statsGrid').innerHTML = '';
+
+            // Destruir gráfico existente
+            if (priceChart) {
+                priceChart.destroy();
+                priceChart = null;
+            }
+        }
+
+        function calculateStats(series) {
+            const stats = {};
+
+            series.forEach(item => {
+                if (!item.data || item.data.length === 0) return;
+
+                const prices = item.data.map(point => point.price);
+                const returns = [];
+
+                // Calcular retornos diarios
+                for (let i = 1; i < prices.length; i++) {
+                    const dailyReturn = ((prices[i] - prices[i-1]) / prices[i-1]) * 100;
+                    returns.push(dailyReturn);
+                }
+
+                // Calcular estadísticas
+                const minPrice = Math.min(...prices);
+                const maxPrice = Math.max(...prices);
+                const avgPrice = prices.reduce((a, b) => a + b, 0) / prices.length;
+                const lastPrice = prices[prices.length - 1];
+
+                let volatility = 0;
+                let avgReturn = 0;
+
+                if (returns.length > 0) {
+                    avgReturn = returns.reduce((a, b) => a + b, 0) / returns.length;
+                    const variance = returns.reduce((a, b) => a + Math.pow(b - avgReturn, 2), 0) / returns.length;
+                    volatility = Math.sqrt(variance);
+                }
+
+                const totalReturn = prices.length > 1
+                    ? ((prices[prices.length - 1] - prices[0]) / prices[0]) * 100
+                    : 0;
+
+                stats[item.symbol] = {
+                    symbol: item.symbol,
+                    lastPrice,
+                    minPrice,
+                    maxPrice,
+                    avgPrice,
+                    totalReturn,
+                    avgReturn,
+                    volatility
+                };
+            });
+
+            return stats;
+        }
+
+        function renderStats(series) {
+            const container = document.getElementById('statsGrid');
+            container.innerHTML = '';
+
+            const stats = calculateStats(series);
+
+            for (const symbol in stats) {
+                const data = stats[symbol];
+                const totalReturnClass = data.totalReturn >= 0 ? 'positive' : 'negative';
+                const totalReturnSign = data.totalReturn >= 0 ? '+' : '';
+                const avgReturnClass = data.avgReturn >= 0 ? 'positive' : 'negative';
+                const avgReturnSign = data.avgReturn >= 0 ? '+' : '';
+
+                const card = document.createElement('div');
+                card.className = 'stats-card';
+                card.innerHTML = `
+                    <div class="symbol-title" style="color: ${colors[symbol]}">${symbol}</div>
+                    <ul class="stats-list">
+                        <li><span class="stats-label">Último precio:</span> $${data.lastPrice.toFixed(2)}</li>
+                        <li><span class="stats-label">Precio mínimo:</span> $${data.minPrice.toFixed(2)}</li>
+                        <li><span class="stats-label">Precio máximo:</span> $${data.maxPrice.toFixed(2)}</li>
+                        <li><span class="stats-label">Precio promedio:</span> $${data.avgPrice.toFixed(2)}</li>
+                        <li>
+                            <span class="stats-label">Retorno total:</span>
+                            <span class="${totalReturnClass}">${totalReturnSign}${data.totalReturn.toFixed(2)}%</span>
+                        </li>
+                        <li>
+                            <span class="stats-label">Retorno promedio:</span>
+                            <span class="${avgReturnClass}">${avgReturnSign}${data.avgReturn.toFixed(2)}%</span>
+                        </li>
+                        <li><span class="stats-label">Volatilidad:</span> ${data.volatility.toFixed(2)}%</li>
+                    </ul>
+                `;
+                container.appendChild(card);
+            }
+        }
+
+        function renderPriceChart(series) {
+            const ctx = document.getElementById('priceChart').getContext('2d');
+            if (priceChart) priceChart.destroy();
+
+            // Verificar datos para cada serie
+            const validSeries = series.filter(item => item.data && item.data.length > 0);
+
+            if (validSeries.length === 0) {
+                console.warn('No hay datos válidos para el gráfico de precios');
+                return;
+            }
+
+            priceChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: validSeries.map(item => ({
+                        label: item.symbol,
+                        data: item.data.map(point => ({
+                            x: point.timestamp,  // La biblioteca adaptador-moment se encargará de convertir el formato ISO
+                            y: point.price
+                        })),
+                        borderColor: colors[item.symbol],
+                        backgroundColor: colors[item.symbol] + '20',
+                        tension: 0.1,
+                        borderWidth: 2
+                    }))
+                },
+                options: {
+                    responsive: true,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                tooltipFormat: 'DD/MM/YYYY HH:mm',
+                                displayFormats: {
+                                    hour: 'DD/MM HH:mm',
+                                    day: 'DD/MM',
+                                    week: 'DD/MM',
+                                    month: 'MMM YYYY'
+                                }
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Precio (USD)'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Cargar datos iniciales
+        document.addEventListener('DOMContentLoaded', updateCharts);
+    </script>
+</body>
+</html>
