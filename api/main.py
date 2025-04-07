@@ -867,6 +867,7 @@ async def get_time_series(
 
     return TimeSeriesResponse(series=result)
 
+
 @app.get("/api/timeseries-with-profitability", response_model=TimeSeriesResponse)
 async def get_time_series_with_profitability(
         symbol: str = Query("BAP", description="Símbolo a consultar (BAP, BRK-B, ILF)"),
@@ -911,13 +912,15 @@ async def get_time_series_with_profitability(
                 logger.warning(f"No hay precio original definido para {sym}")
                 original_price = filtered_df['currentPrice'].iloc[0] if not filtered_df.empty else None
 
-            avg_volume = filtered_df['volumen'].mean() if 'volumen' in filtered_df.columns else None
+            # Manejar diferentes nombres de columna para volumen
+            volume_column = 'volumen' if sym == 'ILF' else 'volume'
+            avg_volume = filtered_df[volume_column].mean() if volume_column in filtered_df.columns else None
 
             series_data = []
             for _, row in filtered_df.iterrows():
                 if pd.notna(row['currentPrice']):
                     price = float(row['currentPrice'])
-                    volume = float(row['volumen']) if 'volumen' in row and pd.notna(row['volumen']) else None
+                    volume = float(row[volume_column]) if volume_column in row and pd.notna(row[volume_column]) else None
 
                     return_pct = None
                     if original_price is not None and original_price > 0:
@@ -941,7 +944,7 @@ async def get_time_series_with_profitability(
                 symbol=sym,
                 data=series_data,
                 period=period,
-                original_price= original_price,
+                original_price=original_price,
                 current_price=last_price,
                 current_profitability=((last_price - original_price) / original_price) * 100
                 if last_price is not None and original_price is not None and original_price > 0 else None,
@@ -974,7 +977,6 @@ async def get_time_series_with_profitability(
             logger.error(f"Error procesando {sym}: {str(e)}", exc_info=True)
 
     return TimeSeriesResponse(series=result)
-
 
 @app.post("/refresh")
 def refresh_data(background_tasks: BackgroundTasks):

@@ -342,19 +342,20 @@
             'ILF': '#dc3545'
         };
 
-        // Formatear números grandes
-        function formatNumber(num) {
+        // Formatear números grandes (modificado para volúmenes sin $)
+        function formatNumber(num, isVolume = false) {
             if (!num) return 'N/A';
+            const prefix = isVolume ? '' : '$';
             if (num >= 1000000000) {
-                return '$' + (num / 1000000000).toFixed(2) + 'B';
+                return prefix + (num / 1000000000).toFixed(2) + 'B';
             }
             if (num >= 1000000) {
-                return '$' + (num / 1000000).toFixed(2) + 'M';
+                return prefix + (num / 1000000).toFixed(2) + 'M';
             }
             if (num >= 1000) {
-                return '$' + (num / 1000).toFixed(2) + 'K';
+                return prefix + (num / 1000).toFixed(2) + 'K';
             }
-            return '$' + num.toFixed(2);
+            return prefix + num.toFixed(2);
         }
 
         // Obtener símbolos seleccionados
@@ -435,6 +436,17 @@
                 priceChart.destroy();
                 priceChart = null;
             }
+        }
+
+        // Función auxiliar para obtener el texto del período
+        function getPeriodText(period) {
+            const periods = {
+                '1d': '1 Día',
+                '1w': '1 Semana',
+                '1m': '1 Mes',
+                '3m': '3 Meses'
+            };
+            return periods[period] || period;
         }
 
         // Renderizar gráfico de precios
@@ -520,7 +532,7 @@
                                         `Apertura: $${rawData.open?.toFixed(2) || 'N/A'}`,
                                         `Mín: $${rawData.day_low?.toFixed(2) || 'N/A'}`,
                                         `Máx: $${rawData.day_high?.toFixed(2) || 'N/A'}`,
-                                        `Vol: ${rawData.volume ? formatNumber(rawData.volume) : 'N/A'}`
+                                        `Vol: ${rawData.volume ? formatNumber(rawData.volume, true) : 'N/A'}`
                                     ];
                                 }
                             }
@@ -530,18 +542,7 @@
             });
         }
 
-        // Función auxiliar para obtener el texto del período
-        function getPeriodText(period) {
-            const periods = {
-                '1d': '1 Día',
-                '1w': '1 Semana',
-                '1m': '1 Mes',
-                '3m': '3 Meses'
-            };
-            return periods[period] || period;
-        }
-
-        // Renderizar estadísticas (versión adaptable)
+        // Renderizar estadísticas (versión corregida)
         function renderStats(series) {
             const container = document.getElementById('statsGrid');
             container.innerHTML = '';
@@ -553,6 +554,21 @@
                 const lastDataPoint = item.data[item.data.length - 1];
                 const lastPrice = lastDataPoint.price;
                 const totalReturn = item.current_profitability || 0;
+                const marketCap = item.market_cap ? formatNumber(item.market_cap) : 'N/A';
+                const peRatio = item.trailing_pe ? item.trailing_pe.toFixed(2) : 'N/A';
+
+                // Corrección para dividend yield (dividir por 100 si es mayor a 100)
+                let dividendYield = item.dividend_yield ? item.dividend_yield : 0;
+                if (dividendYield > 100) {
+                    dividendYield = (dividendYield / 100).toFixed(2) + '%';
+                } else {
+                    dividendYield = dividendYield.toFixed(2) + '%';
+                }
+
+                // Calcular volumen total y promedio (sin signo $)
+                const volumes = item.data.map(p => p.volume).filter(v => v);
+                const totalVolume = volumes.length > 0 ? formatNumber(volumes.reduce((a, b) => a + b, 0), true) : 'N/A';
+                const avgVolume = item.average_volume ? formatNumber(item.average_volume, true) : 'N/A';
 
                 const card = document.createElement('div');
                 card.className = `stats-card ${selectedCount > 1 ? 'compact-view' : ''}`;
@@ -575,25 +591,17 @@
 
                 // Solo mostrar detalles adicionales si hay una sola acción
                 if (selectedCount === 1) {
-                    const prices = item.data.map(p => p.price);
-                    const minPrice = Math.min(...prices);
-                    const maxPrice = Math.max(...prices);
-                    const marketCap = item.market_cap ? formatNumber(item.market_cap) : 'N/A';
-                    const peRatio = item.trailing_pe ? item.trailing_pe.toFixed(2) : 'N/A';
-                    const dividendYield = item.dividend_yield ? (item.dividend_yield * 100).toFixed(2) + '%' : 'N/A';
-                    const fiftyTwoWeekRange = item.fifty_two_week_range || 'N/A';
-
                     card.innerHTML += `
                         <div class="market-cap">Capitalización: ${marketCap}</div>
                         <ul class="stats-list">
                             <li><span class="stats-label">Apertura:</span> $${lastDataPoint.open?.toFixed(2) || 'N/A'}</li>
                             <li><span class="stats-label">Mín día:</span> $${lastDataPoint.day_low?.toFixed(2) || 'N/A'}</li>
                             <li><span class="stats-label">Máx día:</span> $${lastDataPoint.day_high?.toFixed(2) || 'N/A'}</li>
-                            <li><span class="stats-label">Mín período:</span> $${minPrice.toFixed(2)}</li>
-                            <li><span class="stats-label">Máx período:</span> $${maxPrice.toFixed(2)}</li>
+                            <li><span class="stats-label">Volumen total:</span> ${totalVolume}</li>
+                            <li><span class="stats-label">Volumen promedio:</span> ${avgVolume}</li>
                             <li><span class="stats-label">P/E Ratio:</span> ${peRatio}</li>
                             <li><span class="stats-label">Dividend Yield:</span> ${dividendYield}</li>
-                            <li><span class="stats-label">52 Semanas:</span> ${fiftyTwoWeekRange}</li>
+                            <li><span class="stats-label">52 Semanas:</span> ${item.fifty_two_week_range || 'N/A'}</li>
                         </ul>
                     `;
                 }
