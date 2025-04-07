@@ -566,9 +566,19 @@
                 }
 
                 // Calcular volumen total y promedio (sin signo $)
-                const volumes = item.data.map(p => p.volume).filter(v => v);
-                const totalVolume = volumes.length > 0 ? formatNumber(volumes.reduce((a, b) => a + b, 0), true) : 'N/A';
-                const avgVolume = item.average_volume ? formatNumber(item.average_volume, true) : 'N/A';
+                // En la función renderStats:
+                const volumes = item.data
+                    .map(p => p.volume)
+                    .filter(v => v !== null && v !== undefined && !isNaN(v));
+
+                const totalVolume = volumes.length > 0
+                    ? formatNumber(volumes.reduce((a, b) => a + b, 0), true)
+                    : 'N/A';
+
+                const avgVolume = volumes.length > 0
+                    ? formatNumber(volumes.reduce((a, b) => a + b, 0) / volumes.length, true)
+                    : 'N/A';
+
 
                 const card = document.createElement('div');
                 card.className = `stats-card ${selectedCount > 1 ? 'compact-view' : ''}`;

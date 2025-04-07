@@ -287,6 +287,38 @@ def load_dataframe(symbol: str, force_reload: bool = False) -> pd.DataFrame:
 
     return None
 
+
+def load_historical_data(symbol: str):
+    """Carga datos históricos desde archivos CSV incluyendo volumen"""
+    root_path = get_project_root()
+    if symbol.upper() == "BRK-B":
+        hist_filename = "brk-b_historical.csv"
+    else:
+        hist_filename = f"{symbol.lower()}_historical.csv"
+
+    hist_file_path = os.path.join(root_path, "historical_data", hist_filename)
+
+    if not os.path.exists(hist_file_path):
+        return None
+
+    try:
+        df = pd.read_csv(hist_file_path)
+        # Convertir fecha
+        df['timestamp'] = pd.to_datetime(df['Date'], utc=True).dt.tz_localize(None)
+        df = df.dropna(subset=['timestamp'])
+
+        # Mapear columnas (ajusta según tu CSV histórico)
+        df = df.rename(columns={
+            'Open': 'currentPrice',
+            'Volume': 'volumen'  # Asegúrate que coincida con el nombre en tu CSV
+        })
+
+        return df[['timestamp', 'currentPrice', 'volumen']]
+    except Exception as e:
+        logger.error(f"Error cargando datos históricos para {symbol}: {str(e)}")
+        return None
+
+
 def background_update_all_dataframes():
     """
     Actualiza todos los dataframes en segundo plano
@@ -656,166 +688,6 @@ def get_symbol_profitability(symbol: str):
     }
 
 
-@app.get("/stocks/{symbol}/continuous-data")
-def get_continuous_stock_data(
-        symbol: str,
-        start_date: str = "2025-02-26",
-        end_date: Optional[str] = None,
-        field: str = "price"
-):
-    """
-    Obtiene datos continuos combinando datos históricos y actuales,
-    mapeando campos similares para crear una serie temporal uniforme.
-
-    Args:
-        symbol: Símbolo de la acción o ETF
-        start_date: Fecha de inicio en formato YYYY-MM-DD (default: 2025-02-26)
-        end_date: Fecha final en formato YYYY-MM-DD (opcional)
-        field: Campo a devolver ("price", "volume") - price combinará Open y currentPrice
-
-    Returns:
-        Lista de registros con datos continuos
-    """
-    try:
-        # Validar fechas
-        start_datetime = pd.to_datetime(start_date).tz_localize(None)  # Eliminar zona horaria
-        if end_date:
-            end_datetime = pd.to_datetime(end_date).tz_localize(None)  # Eliminar zona horaria
-        else:
-            # Si no se especifica, usar la fecha actual
-            end_datetime = pd.to_datetime(datetime.now().strftime("%Y-%m-%d")).tz_localize(None)
-    except Exception as e:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Formato de fecha inválido. Use YYYY-MM-DD. Error: {str(e)}"
-        )
-
-    # Cargar datos actuales (scraping)
-    current_df = load_dataframe(symbol)
-    if current_df is None or current_df.empty:
-        raise HTTPException(status_code=404, detail=f"Datos actuales no encontrados para {symbol}")
-
-    # Preparar el nombre del archivo de datos históricos
-    root_path = get_project_root()
-    if symbol.upper() == "BRK-B":
-        hist_filename = "brk-b_historical.csv"
-    else:
-        hist_filename = f"{symbol.lower()}_historical.csv"
-
-    hist_file_path = os.path.join(root_path, "data", hist_filename)
-
-    # Verificar si existe el archivo histórico
-    has_historical_data = os.path.exists(hist_file_path)
-    hist_df = pd.DataFrame()  # Inicializar dataframe vacío
-
-    # Procesar datos históricos si existen
-    if has_historical_data:
-        try:
-            logger.info(f"Cargando datos históricos de {hist_file_path}")
-            hist_df = pd.read_csv(hist_file_path)
-
-            # Asegurar que la columna de fecha existe
-            if 'Date' not in hist_df.columns:
-                logger.warning(f"Columna 'Date' no encontrada en datos históricos de {symbol}")
-                has_historical_data = False
-            else:
-                # Convertir 'Date' a datetime sin zona horaria
-                hist_df['Date'] = pd.to_datetime(hist_df['Date'], utc=True).dt.tz_localize(None)
-
-                # Renombrar columnas para consistencia
-                hist_df = hist_df.rename(columns={
-                    'Date': 'timestamp',
-                    'Open': 'open',
-                    'Close': 'close',
-                    'Volume': 'volumen'
-                })
-
-                # Filtrar por fecha
-                hist_df = hist_df[hist_df['timestamp'] >= start_datetime]
-
-                # Punto de corte: 1 de abril de 2025
-                transition_date = pd.to_datetime("2025-04-01").tz_localize(None)
-                hist_df = hist_df[hist_df['timestamp'] < transition_date]
-        except Exception as e:
-            logger.error(f"Error al cargar datos históricos: {str(e)}")
-            has_historical_data = False
-
-    # Procesar datos actuales
-    # Asegurar que la columna timestamp es datetime sin zona horaria
-    if 'timestamp' in current_df.columns:
-        # Verificar primero si el tipo de dato es datetime
-        if not pd.api.types.is_datetime64_any_dtype(current_df['timestamp']):
-            # Convertir explícitamente a datetime si no lo es
-            current_df['timestamp'] = pd.to_datetime(current_df['timestamp'], utc=True)
-
-        # Ahora es seguro usar el accessor .dt
-        if current_df['timestamp'].dt.tz is not None:
-            current_df['timestamp'] = current_df['timestamp'].dt.tz_localize(None)
-    else:
-        raise HTTPException(status_code=500, detail=f"El dataframe de {symbol} no contiene columna 'timestamp'")
-
-    # Filtrar datos actuales por fecha (usando fechas sin zona horaria)
-    current_df = current_df[
-        (current_df['timestamp'] >= pd.to_datetime("2025-04-01").tz_localize(None)) &
-        (current_df['timestamp'] <= end_datetime)
-        ]
-
-    # Crear una tabla unificada
-    frames = []
-
-    # Añadir datos históricos si existen y son relevantes
-    if has_historical_data and not hist_df.empty:
-        # Para datos históricos, seleccionar columnas según el campo solicitado
-        if field == "price":
-            # Hasta el 31 de marzo, usar 'open' como precio
-            hist_df['value'] = hist_df['open']
-            hist_df['source'] = 'historical'
-            frames.append(hist_df[['timestamp', 'value', 'source']])
-        elif field == "volume":
-            hist_df['value'] = hist_df['volumen']
-            hist_df['source'] = 'historical'
-            frames.append(hist_df[['timestamp', 'value', 'source']])
-
-    # Añadir datos actuales
-    if not current_df.empty:
-        # Para datos actuales, usar currentPrice o volumen según corresponda
-        if field == "price":
-            current_df['value'] = current_df['currentPrice']
-            current_df['source'] = 'current'
-            frames.append(current_df[['timestamp', 'value', 'source']])
-        elif field == "volume":
-            current_df['value'] = current_df['volumen']
-            current_df['source'] = 'current'
-            frames.append(current_df[['timestamp', 'value', 'source']])
-
-    # Combinar los dataframes
-    if not frames:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No hay datos disponibles para {symbol} en el rango de fechas especificado"
-        )
-
-    combined_df = pd.concat(frames)
-    combined_df = combined_df.sort_values('timestamp')
-
-    # Convertir a registros y limpiar valores NaN
-    records = combined_df.to_dict(orient='records')
-    clean_records = clean_json_data(records)
-
-    # Añadir metadatos
-    result = {
-        "symbol": symbol,
-        "field": field,
-        "period": {
-            "start_date": start_date,
-            "end_date": end_date or datetime.now().strftime("%Y-%m-%d")
-        },
-        "data": clean_records
-    }
-
-    return result
-
-
 @app.get("/api/timeseries", response_model=TimeSeriesResponse)
 async def get_time_series(
         symbol: str = Query("BAP", description="Símbolo a consultar (BAP, BRK-B, ILF)"),
@@ -884,61 +756,85 @@ async def get_time_series_with_profitability(
 
     symbols_to_fetch = ["BAP", "BRK-B", "ILF"] if compare_all else [symbol]
     end_date = datetime.now()
+    transition_date = datetime(2025, 4, 5)  # Fecha de transición
 
     logger.info(f"Procesando símbolos: {symbols_to_fetch}, período: {period}")
     result = []
 
     for sym in symbols_to_fetch:
         try:
-            logger.debug(f"Cargando datos para {sym}")
-            df = load_dataframe(sym)
+            # Cargar datos actuales (scraping)
+            current_df = load_dataframe(sym)
+            if current_df is None:
+                current_df = pd.DataFrame()
 
-            if df is None or df.empty:
-                logger.warning(f"No hay datos disponibles para {sym}")
+            # Cargar datos históricos
+            hist_df = load_historical_data(sym)
+
+            # Filtrar datos históricos (solo hasta 05/04)
+            if hist_df is not None:
+                hist_df = hist_df[hist_df['timestamp'] < transition_date]
+
+            # Filtrar datos actuales (solo desde 07/04)
+            if not current_df.empty:
+                current_df = current_df[current_df['timestamp'] >= transition_date]
+
+            # Combinar ambos datasets
+            combined_df = pd.concat([hist_df, current_df], ignore_index=True) if hist_df is not None else current_df
+
+            if combined_df.empty:
+                logger.warning(f"No hay datos combinados para {sym}")
                 continue
 
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            # Aplicar filtro de período
             start_date = end_date - periods_map[period]
-
-            filtered_df = df[(df['timestamp'] >= start_date) & (df['timestamp'] <= end_date)]
+            filtered_df = combined_df[(combined_df['timestamp'] >= start_date) &
+                                      (combined_df['timestamp'] <= end_date)]
             filtered_df = filtered_df.sort_values('timestamp')
 
             if filtered_df.empty:
                 logger.warning(f"No hay datos para {sym} en el período {period}")
                 continue
 
-            original_price = ORIGINAL_PRICES.get(sym)
-            if original_price is None:
-                logger.warning(f"No hay precio original definido para {sym}")
-                original_price = filtered_df['currentPrice'].iloc[0] if not filtered_df.empty else None
+            # Obtener el resto de los datos del último registro actual
+            last_current_data = get_latest_data(sym) or {}
 
-            # Manejar diferentes nombres de columna para volumen
-            volume_column = 'volumen' if sym == 'ILF' else 'volume'
-            avg_volume = filtered_df[volume_column].mean() if volume_column in filtered_df.columns else None
-
+            # Crear la serie temporal
             series_data = []
             for _, row in filtered_df.iterrows():
                 if pd.notna(row['currentPrice']):
-                    price = float(row['currentPrice'])
-                    volume = float(row[volume_column]) if volume_column in row and pd.notna(row[volume_column]) else None
-
-                    return_pct = None
-                    if original_price is not None and original_price > 0:
-                        return_pct = ((price - original_price) / original_price) * 100
+                    # Determinar si es dato histórico o actual
+                    is_historical = row['timestamp'] < transition_date
 
                     point = TimeSeriesPoint(
                         timestamp=row['timestamp'].isoformat(),
-                        price=price,
-                        return_percentage=return_pct,
-                        volume=volume,
-                        open=float(row['open']) if 'open' in row and pd.notna(row['open']) else None,
-                        day_low=float(row['dayLow']) if 'dayLow' in row and pd.notna(row['dayLow']) else None,
-                        day_high=float(row['dayHigh']) if 'dayHigh' in row and pd.notna(row['dayHigh']) else None
+                        price=float(row['currentPrice']),
+                        volume=(
+                            float(row['volumen'])
+                            if 'volumen' in row and pd.notna(row['volumen'])
+                            else None
+                        ),
+                        open=(
+                            float(row['open'])
+                            if 'open' in row and pd.notna(row['open'])
+                            else None
+                        ),
+                        day_low=(
+                            float(row['dayLow'])
+                            if 'dayLow' in row and pd.notna(row['dayLow'])
+                            else None
+                        ),
+                        day_high=(
+                            float(row['dayHigh'])
+                            if 'dayHigh' in row and pd.notna(row['dayHigh'])
+                            else None
+                        )
                     )
                     series_data.append(point)
 
-            last_record = filtered_df.iloc[-1] if not filtered_df.empty else None
-            last_price = last_record['currentPrice'] if last_record is not None else None
+            # Calcular rentabilidad
+            original_price = ORIGINAL_PRICES.get(sym)
+            last_price = filtered_df['currentPrice'].iloc[-1] if not filtered_df.empty else None
 
             symbol_series = SymbolTimeSeries(
                 symbol=sym,
@@ -946,31 +842,33 @@ async def get_time_series_with_profitability(
                 period=period,
                 original_price=original_price,
                 current_price=last_price,
-                current_profitability=((last_price - original_price) / original_price) * 100
-                if last_price is not None and original_price is not None and original_price > 0 else None,
-                average_volume=avg_volume,
-                open_price=float(last_record['open']) if last_record is not None and 'open' in last_record and pd.notna(
-                    last_record['open']) else None,
-                day_high=float(
-                    last_record['dayHigh']) if last_record is not None and 'dayHigh' in last_record and pd.notna(
-                    last_record['dayHigh']) else None,
-                day_low=float(
-                    last_record['dayLow']) if last_record is not None and 'dayLow' in last_record and pd.notna(
-                    last_record['dayLow']) else None,
-                market_cap=float(last_record['marketCap'])
-                if last_record is not None and 'marketCap' in last_record and pd.notna(
-                    last_record['marketCap']) else None,
-                trailing_pe=float(last_record['trailingPE'])
-                if last_record is not None and 'trailingPE' in last_record and pd.notna(
-                    last_record['trailingPE']) else None,
-                dividend_yield=float(last_record['dividendYield'])
-                if last_record is not None and 'dividendYield' in last_record and pd.notna(
-                    last_record['dividendYield']) else None,
-                fifty_two_week_range=last_record['fiftyTwoWeekRange']
-                if last_record is not None and 'fiftyTwoWeekRange' in last_record and pd.notna(
-                    last_record['fiftyTwoWeekRange']) else None
+                current_profitability=(
+                    ((last_price - original_price) / original_price) * 100
+                    if last_price and original_price and original_price > 0
+                    else None
+                ),
+                market_cap=(
+                    float(last_current_data['marketCap'])
+                    if last_current_data and 'marketCap' in last_current_data
+                       and pd.notna(last_current_data['marketCap'])
+                    else None
+                ),
+                trailing_pe=(
+                    float(last_current_data['trailingPE'])
+                    if last_current_data and 'trailingPE' in last_current_data
+                       and pd.notna(last_current_data['trailingPE'])
+                    else None
+                ),
+                dividend_yield=(
+                    float(last_current_data['dividendYield'])
+                    if last_current_data and 'dividendYield' in last_current_data
+                       and pd.notna(last_current_data['dividendYield'])
+                    else None
+                ),
+                fifty_two_week_range=(
+                    last_current_data.get('fiftyTwoWeekRange', None)
+                )
             )
-
             result.append(symbol_series)
 
         except Exception as e:
