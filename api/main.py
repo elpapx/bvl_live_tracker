@@ -247,6 +247,15 @@ def load_dataframe(symbol: str, force_reload: bool = False) -> pd.DataFrame:
                 df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
                 df = df.dropna(subset=['timestamp'])
 
+                # Estandarizar el campo de volumen
+                if 'volumen' not in df.columns:
+                    # Buscar volumen en otros nombres de columna posibles
+                    volume_col = next((col for col in df.columns if 'vol' in col.lower()), None)
+                    if volume_col:
+                        df['volumen'] = df[volume_col]
+                    else:
+                        df['volumen'] = 0  # Valor por defecto si no se encuentra volumen
+
                 # Lista de todas las columnas numéricas que necesitamos
                 numeric_cols = [
                     'currentPrice', 'open', 'dayHigh', 'dayLow', 'volumen',
@@ -739,7 +748,6 @@ async def get_time_series(
 
     return TimeSeriesResponse(series=result)
 
-
 @app.get("/api/timeseries-with-profitability", response_model=TimeSeriesResponse)
 async def get_time_series_with_profitability(
         symbol: str = Query("BAP", description="Símbolo a consultar (BAP, BRK-B, ILF)"),
@@ -774,10 +782,12 @@ async def get_time_series_with_profitability(
             # Filtrar datos históricos (solo hasta 05/04)
             if hist_df is not None:
                 hist_df = hist_df[hist_df['timestamp'] < transition_date]
+                logger.info(f"Datos históricos para {sym}: {len(hist_df)} registros")
 
             # Filtrar datos actuales (solo desde 07/04)
             if not current_df.empty:
                 current_df = current_df[current_df['timestamp'] >= transition_date]
+                logger.info(f"Datos actuales para {sym}: {len(current_df)} registros")
 
             # Combinar ambos datasets
             combined_df = pd.concat([hist_df, current_df], ignore_index=True) if hist_df is not None else current_df
@@ -792,6 +802,8 @@ async def get_time_series_with_profitability(
                                       (combined_df['timestamp'] <= end_date)]
             filtered_df = filtered_df.sort_values('timestamp')
 
+            logger.info(f"Datos filtrados para {sym} ({period}): {len(filtered_df)} registros")
+
             if filtered_df.empty:
                 logger.warning(f"No hay datos para {sym} en el período {period}")
                 continue
@@ -803,17 +815,17 @@ async def get_time_series_with_profitability(
             series_data = []
             for _, row in filtered_df.iterrows():
                 if pd.notna(row['currentPrice']):
-                    # Determinar si es dato histórico o actual
-                    is_historical = row['timestamp'] < transition_date
+                    # Obtener volumen de cualquier campo posible
+                    volume_value = (
+                        float(row['volumen'])
+                        if 'volumen' in row and pd.notna(row['volumen'])
+                        else None
+                    )
 
                     point = TimeSeriesPoint(
                         timestamp=row['timestamp'].isoformat(),
                         price=float(row['currentPrice']),
-                        volume=(
-                            float(row['volumen'])
-                            if 'volumen' in row and pd.notna(row['volumen'])
-                            else None
-                        ),
+                        volume=volume_value,
                         open=(
                             float(row['open'])
                             if 'open' in row and pd.notna(row['open'])

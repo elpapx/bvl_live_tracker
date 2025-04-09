@@ -396,7 +396,11 @@
 
                 // Filtrar series seleccionadas
                 const filteredSeries = response.data.series.filter(serie =>
-                    selectedSymbols.includes(serie.symbol));
+                    selectedSymbols.includes(serie.symbol) & serie.data?.length > 0 );
+
+                if (filteredSeries.length == 0) {
+                    throw new Error('No hay datos para los simbolos seleccionados');
+                }
 
                 renderPriceChart(filteredSeries);
                 renderStats(filteredSeries);
@@ -450,21 +454,14 @@
         }
 
         // Renderizar gráfico de precios
-        function renderPriceChart(series) {
+                function renderPriceChart(series, period) {
             const ctx = document.getElementById('priceChart').getContext('2d');
             if (priceChart) priceChart.destroy();
-
-            const validSeries = series.filter(item => item.data?.length > 0);
-
-            if (validSeries.length === 0) {
-                showError('No hay datos para mostrar');
-                return;
-            }
 
             priceChart = new Chart(ctx, {
                 type: 'line',
                 data: {
-                    datasets: validSeries.map(item => ({
+                    datasets: series.map(item => ({
                         label: item.symbol,
                         data: item.data.map(point => ({
                             x: point.timestamp,
@@ -499,6 +496,11 @@
                             },
                             grid: {
                                 display: false
+                            },
+                            title: {
+                                display: true,
+                                text: `Período: ${getPeriodText(period)}`,
+                                color: '#6c757d'
                             }
                         },
                         y: {
@@ -525,20 +527,87 @@
                                 label: function(context) {
                                     const dataset = context.dataset;
                                     const dataPoint = dataset.data[context.dataIndex];
-                                    const rawData = validSeries.find(s => s.symbol === dataset.label).data[context.dataIndex];
+                                    const rawData = series.find(s => s.symbol === dataset.label).data[context.dataIndex];
 
                                     return [
                                         `${dataset.label}: $${dataPoint.y.toFixed(2)}`,
-                                        `Apertura: $${rawData.open?.toFixed(2) || 'N/A'}`,
-                                        `Mín: $${rawData.day_low?.toFixed(2) || 'N/A'}`,
-                                        `Máx: $${rawData.day_high?.toFixed(2) || 'N/A'}`,
-                                        `Vol: ${rawData.volume ? formatNumber(rawData.volume, true) : 'N/A'}`
-                                    ];
+                                        `Período: ${getPeriodText(period)}`,
+                                        rawData.open ? `Apertura: $${rawData.open.toFixed(2)}` : null,
+                                        rawData.day_low ? `Mín: $${rawData.day_low.toFixed(2)}` : null,
+                                        rawData.day_high ? `Máx: $${rawData.day_high.toFixed(2)}` : null,
+                                        rawData.volume ? `Vol: ${formatNumber(rawData.volume, true)}` : null
+                                    ].filter(line => line !== null);
                                 }
                             }
                         }
                     }
                 }
+            });
+        }
+
+        // Renderizar estadísticas (modificada)
+        function renderStats(series) {
+            const container = document.getElementById('statsGrid');
+            container.innerHTML = '';
+            const selectedCount = series.length;
+
+            series.forEach(item => {
+                if (!item.data?.length) return;
+
+                const lastDataPoint = item.data[item.data.length - 1];
+                const lastPrice = lastDataPoint.price;
+                const totalReturn = item.current_profitability || 0;
+                const marketCap = item.market_cap ? formatNumber(item.market_cap) : 'N/A';
+                const peRatio = item.trailing_pe ? item.trailing_pe.toFixed(2) : 'N/A';
+
+                // Manejo de dividend yield
+                let dividendYield = item.dividend_yield ? item.dividend_yield : 0;
+                if (dividendYield > 100) {
+                    dividendYield = (dividendYield / 100).toFixed(2) + '%';
+                } else {
+                    dividendYield = dividendYield.toFixed(2) + '%';
+                }
+
+                // Calcular volumen total y promedio
+                const volumes = item.data.map(p => p.volume).filter(v => v !== null && v !== undefined && !isNaN(v));
+                const totalVolume = volumes.length > 0 ? formatNumber(volumes.reduce((a, b) => a + b, 0), true) : 'N/A';
+                const avgVolume = volumes.length > 0 ? formatNumber(volumes.reduce((a, b) => a + b, 0) / volumes.length, true) : 'N/A';
+
+                const card = document.createElement('div');
+                card.className = `stats-card ${selectedCount > 1 ? 'compact-view' : ''}`;
+
+                card.innerHTML = `
+                    <div class="symbol-title" style="color: ${colors[item.symbol]}">
+                        ${item.symbol} <span class="price-badge">${getPeriodText(item.period)}</span>
+                    </div>
+                    <div class="price-header">
+                        <div class="current-price">$${lastPrice.toFixed(2)}</div>
+                        <div class="price-meta">
+                            <span class="original-price">Compra: $${item.original_price?.toFixed(2) || 'N/A'}</span>
+                            <span class="profitability ${totalReturn >= 0 ? 'positive' : 'negative'}">
+                                ${totalReturn >= 0 ? '+' : ''}${totalReturn.toFixed(2)}%
+                            </span>
+                        </div>
+                    </div>
+                    ${selectedCount === 1 ? `
+                        <div class="market-cap">Capitalización: ${marketCap}</div>
+                        <ul class="stats-list">
+                            <li><span class="stats-label">Apertura:</span> $${lastDataPoint.open?.toFixed(2) || 'N/A'}</li>
+                            <li><span class="stats-label">Mín día:</span> $${lastDataPoint.day_low?.toFixed(2) || 'N/A'}</li>
+                            <li><span class="stats-label">Máx día:</span> $${lastDataPoint.day_high?.toFixed(2) || 'N/A'}</li>
+                            <li><span class="stats-label">Volumen total:</span> ${totalVolume}</li>
+                            <li><span class="stats-label">Volumen promedio:</span> ${avgVolume}</li>
+                            <li><span class="stats-label">P/E Ratio:</span> ${peRatio}</li>
+                            <li><span class="stats-label">Dividend Yield:</span> ${dividendYield}</li>
+                            <li><span class="stats-label">52 Semanas:</span> ${item.fifty_two_week_range || 'N/A'}</li>
+                        </ul>
+                    ` : ''}
+                    <div class="update-time">
+                        Actualizado: ${new Date().toLocaleTimeString()}
+                    </div>
+                `;
+
+                container.appendChild(card);
             });
         }
 
@@ -566,14 +635,16 @@
                 }
 
                 // Calcular volumen total y promedio (sin signo $)
-                // En la función renderStats:
-                const volumes = item.data
-                    .map(p => p.volume)
-                    .filter(v => v !== null && v !== undefined && !isNaN(v));
+                // volumen
+                // Buscar volumen en cualquier campo posible
+                const volumes = item.data.map(p => {
+                    // Buscar volumen en cualquier campo posible
+                    return p.volume || p.volumen || p.VOLUME || (p.volume === 0 ? 0 : null);
+                }).filter(v => v !== null && v !== undefined && !isNaN(v));
 
                 const totalVolume = volumes.length > 0
                     ? formatNumber(volumes.reduce((a, b) => a + b, 0), true)
-                    : 'N/A';
+                    : 'N/A (Sin datos)';
 
                 const avgVolume = volumes.length > 0
                     ? formatNumber(volumes.reduce((a, b) => a + b, 0) / volumes.length, true)
