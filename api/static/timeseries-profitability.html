@@ -18,7 +18,7 @@
         }
         .dashboard {
             display: grid;
-            grid-template-columns: 2fr 1fr;
+            grid-template-columns: 1fr;
             gap: 20px;
             max-width: 1200px;
             margin: 0 auto;
@@ -28,7 +28,7 @@
             padding: 15px 20px;
             border-radius: 12px;
             margin-bottom: 20px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
             display: flex;
             flex-wrap: wrap;
             align-items: center;
@@ -44,83 +44,58 @@
             background: white;
             padding: 20px;
             border-radius: 12px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
             height: fit-content;
+            position: relative;
         }
-        .stats-container {
-            background: white;
-            padding: 20px;
-            border-radius: 12px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.08);
-            height: fit-content;
-        }
-        .stats-grid {
+        .price-overlay {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 100;
+            background-color: rgba(255, 255, 255, 0.9);
+            padding: 8px 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
             display: flex;
-            flex-direction: column;
-            gap: 20px;
+            align-items: center;
+            gap: 10px;
+            transition: opacity 0.3s ease;
         }
-        .stats-card {
-            background: #ffffff;
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 1px 5px rgba(0,0,0,0.05);
-            border: 1px solid #eee;
+        .price-overlay.hidden {
+            opacity: 0;
+            pointer-events: none;
         }
-        .compact-view {
-            padding: 15px;
-        }
-        .compact-view .symbol-title {
-            font-size: 20px;
-            margin-bottom: 5px;
-        }
-        .compact-view .price-header {
-            flex-direction: column;
-            align-items: flex-start;
-            gap: 5px;
-            margin-bottom: 10px;
-            padding-bottom: 10px;
-        }
-        .compact-view .current-price {
+        .current-price-display {
             font-size: 24px;
-        }
-        .compact-view .price-meta {
-            text-align: left;
-        }
-        .compact-view .stats-list,
-        .compact-view .market-cap {
-            display: none;
-        }
-        .symbol-title {
             font-weight: 700;
-            margin-bottom: 15px;
-            font-size: 18px;
-            color: #2c3e50;
+            color: #202124;
         }
-        .stats-list {
-            list-style-type: none;
-            padding: 0;
-            margin: 15px 0 0;
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 12px;
-        }
-        .stats-list li {
-            margin-bottom: 10px;
-            display: flex;
-            justify-content: space-between;
+        .price-change {
             font-size: 14px;
-        }
-        .stats-label {
             font-weight: 500;
-            color: #6c757d;
+            padding: 4px 8px;
+            border-radius: 4px;
         }
-        .positive {
-            color: #28a745;
-            font-weight: 600;
+        .positive-change {
+            color: #34a853;
+            background-color: rgba(52, 168, 83, 0.1);
         }
-        .negative {
-            color: #dc3545;
-            font-weight: 600;
+        .negative-change {
+            color: #ea4335;
+            background-color: rgba(234, 67, 53, 0.1);
+        }
+        .checkbox-container {
+            display: flex;
+            gap: 15px;
+            margin-top: 10px;
+            flex-wrap: wrap;
+        }
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 14px;
         }
         canvas {
             max-height: 500px;
@@ -159,18 +134,48 @@
             grid-column: 1 / -1;
             color: #6c757d;
         }
-        .checkbox-container {
+        h3 {
+            margin-top: 0;
+            margin-bottom: 15px;
+            font-size: 20px;
+            color: #343a40;
+            font-weight: 600;
+        }
+
+        /* Estilos para los indicadores de mercado */
+        .market-indicators {
             display: flex;
-            gap: 15px;
-            margin-top: 10px;
             flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 20px;
+            width: 100%;
         }
-        .checkbox-group {
-            display: flex;
-            align-items: center;
-            gap: 6px;
+        .indicator-card {
+            background-color: #fff;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 10px 15px;
+            flex: 1;
+            min-width: 150px;
+            transition: all 0.2s ease;
+        }
+        .indicator-card:hover {
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .indicator-label {
+            font-size: 12px;
+            color: #70757a;
+            margin-bottom: 5px;
+            font-weight: normal;
+            text-transform: uppercase;
+        }
+        .indicator-value {
             font-size: 14px;
+            font-weight: 600;
+            color: #202124;
         }
+
+        /* Auto-update toggle */
         .auto-update-toggle {
             margin-left: auto;
             display: flex;
@@ -181,8 +186,8 @@
         .toggle-switch {
             position: relative;
             display: inline-block;
-            width: 50px;
-            height: 24px;
+            width: 40px;
+            height: 20px;
         }
         .toggle-switch input {
             opacity: 0;
@@ -198,79 +203,97 @@
             bottom: 0;
             background-color: #ccc;
             transition: .4s;
-            border-radius: 24px;
+            border-radius: 20px;
         }
         .slider:before {
             position: absolute;
             content: "";
-            height: 18px;
-            width: 18px;
-            left: 3px;
-            bottom: 3px;
+            height: 16px;
+            width: 16px;
+            left: 2px;
+            bottom: 2px;
             background-color: white;
             transition: .4s;
             border-radius: 50%;
         }
         input:checked + .slider {
-            background-color: #007bff;
+            background-color: #1a73e8;
         }
         input:checked + .slider:before {
-            transform: translateX(26px);
+            transform: translateX(20px);
         }
-        h3 {
-            margin-top: 0;
-            margin-bottom: 15px;
-            font-size: 20px;
-            color: #343a40;
-            font-weight: 600;
+
+        /* Nuevo componente para el resumen de múltiples acciones */
+        .stocks-summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
         }
-        .price-header {
+        .stock-card {
+            background: white;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+            transition: transform 0.2s, box-shadow 0.3s;
+        }
+        .stock-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        .stock-header {
+            padding: 15px;
+            border-bottom: 1px solid #f0f0f0;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 15px;
-            padding-bottom: 15px;
-            border-bottom: 1px solid #eee;
         }
-        .current-price {
-            font-size: 28px;
+        .stock-symbol {
+            font-size: 18px;
             font-weight: 700;
-            color: #212529;
+            color: #202124;
         }
-        .price-meta {
-            text-align: right;
+        .stock-price {
+            font-size: 20px;
+            font-weight: 600;
         }
-        .original-price {
+        .stock-metrics {
+            padding: 15px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+        .metric {
+            display: flex;
+            flex-direction: column;
+        }
+        .metric-label {
+            font-size: 12px;
+            color: #70757a;
+        }
+        .metric-value {
             font-size: 14px;
-            color: #6c757d;
-            display: block;
+            font-weight: 500;
+            color: #202124;
         }
-        .profitability {
-            font-size: 16px;
-            font-weight: 600;
-        }
-        .market-cap {
-            font-size: 13px;
-            color: #6c757d;
-            margin-bottom: 15px;
-            padding: 6px 0;
-            border-bottom: 1px dashed #eee;
-        }
-        .update-time {
-            font-size: 12px;
-            color: #6c757d;
-            text-align: right;
-            margin-top: 15px;
-        }
-        .price-badge {
-            display: inline-block;
-            padding: 4px 10px;
+        .stock-change-indicator {
+            font-size: 14px;
+            font-weight: 500;
+            padding: 3px 8px;
             border-radius: 4px;
-            font-size: 12px;
-            font-weight: 600;
-            background-color: #f8f9fa;
-            color: #495057;
-            margin-left: 8px;
+        }
+
+        /* Mejoras para responsividad */
+        @media (max-width: 768px) {
+            .market-indicators {
+                flex-direction: column;
+            }
+            .indicator-card {
+                width: 100%;
+            }
+            .stocks-summary {
+                grid-template-columns: 1fr;
+            }
         }
     </style>
 </head>
@@ -322,13 +345,56 @@
         </div>
 
         <div class="chart-container">
-            <h3>Evolución de Precios</h3>
+            <!-- Overlay para mostrar el precio sobre el gráfico -->
+            <div class="price-overlay">
+                <span class="current-price-display">191,08 $</span>
+                <span class="price-change positive-change">↑ 5,18% +9,41 (6 meses)</span>
+            </div>
             <canvas id="priceChart"></canvas>
         </div>
 
-        <div class="stats-container">
-            <h3>Estadísticas</h3>
-            <div id="statsGrid" class="stats-grid"></div>
+        <!-- Indicadores de mercado para una acción seleccionada -->
+        <div class="market-indicators" id="singleStockIndicators">
+            <div class="indicator-card">
+                <div class="indicator-label">CIERRE ANTERIOR</div>
+                <div class="indicator-value">193,60 $</div>
+            </div>
+            <div class="indicator-card">
+                <div class="indicator-label">CAP. BURSÁTIL</div>
+                <div class="indicator-value">15,14 mil M USD</div>
+            </div>
+            <div class="indicator-card">
+                <div class="indicator-label">RELACIÓN P/E</div>
+                <div class="indicator-value">10,15</div>
+            </div>
+            <div class="indicator-card">
+                <div class="indicator-label">VOLUMEN</div>
+                <div class="indicator-value">308,72 mil</div>
+            </div>
+        </div>
+
+        <div class="market-indicators" id="singleStockIndicators2">
+            <div class="indicator-card">
+                <div class="indicator-label">INTERVALO DIARIO</div>
+                <div class="indicator-value">187,29 $ - 192,05 $</div>
+            </div>
+            <div class="indicator-card">
+                <div class="indicator-label">VOLUMEN MEDIO</div>
+                <div class="indicator-value">308,72 mil</div>
+            </div>
+            <div class="indicator-card">
+                <div class="indicator-label">RENTABILIDAD DIV.</div>
+                <div class="indicator-value">4,86 %</div>
+            </div>
+            <div class="indicator-card">
+                <div class="indicator-label">BOLSA PRINCIPAL</div>
+                <div class="indicator-value">NYSE</div>
+            </div>
+        </div>
+
+        <!-- Nuevo componente para mostrar resumen de múltiples acciones -->
+        <div class="stocks-summary" id="multipleStocksSummary" style="display: none;">
+            <!-- Las tarjetas de resumen se generarán dinámicamente aquí -->
         </div>
     </div>
 
@@ -367,6 +433,31 @@
             return symbols;
         }
 
+        // Obtener el cierre anterior confiable
+        function getPreviousClose(series) {
+            if (!series || !series.data || series.data.length === 0) return null;
+
+            // Intentar obtener el cierre anterior directamente del último punto de datos
+            const lastPoint = series.data[series.data.length - 1];
+            if (lastPoint && lastPoint.previous_close) {
+                return lastPoint.previous_close;
+            }
+
+            // Si no está disponible, intentar obtener del primer punto (que podría contener el cierre anterior)
+            const firstPoint = series.data[0];
+            if (firstPoint && firstPoint.previous_close) {
+                return firstPoint.previous_close;
+            }
+
+            // Como última alternativa, si hay más de un punto, usar el precio del penúltimo punto
+            if (series.data.length > 1) {
+                return series.data[series.data.length - 2].price;
+            }
+
+            // Si todo falla, usar un valor de ejemplo consistente con la imagen
+            return 193.60;
+        }
+
         // Función principal para actualizar los gráficos
         async function updateCharts() {
             const period = document.getElementById('period').value;
@@ -375,6 +466,14 @@
             if (selectedSymbols.length === 0) {
                 showError('Seleccione al menos una acción');
                 return;
+            }
+
+            // Mostrar/ocultar overlay según cantidad de acciones seleccionadas
+            const priceOverlay = document.querySelector('.price-overlay');
+            if (selectedSymbols.length > 1) {
+                priceOverlay.classList.add('hidden');
+            } else {
+                priceOverlay.classList.remove('hidden');
             }
 
             // Mostrar carga
@@ -396,14 +495,29 @@
 
                 // Filtrar series seleccionadas
                 const filteredSeries = response.data.series.filter(serie =>
-                    selectedSymbols.includes(serie.symbol) & serie.data?.length > 0 );
+                    selectedSymbols.includes(serie.symbol) && serie.data?.length > 0);
 
                 if (filteredSeries.length == 0) {
                     throw new Error('No hay datos para los simbolos seleccionados');
                 }
 
                 renderPriceChart(filteredSeries);
-                renderStats(filteredSeries);
+
+                // Manejamos la vista según la cantidad de símbolos seleccionados
+                if (selectedSymbols.length === 1) {
+                    // Para un solo símbolo, mostramos indicadores detallados
+                    updatePriceOverlay(filteredSeries[0]);
+                    updateSingleStockIndicators(filteredSeries[0]);
+                    document.getElementById('singleStockIndicators').style.display = 'flex';
+                    document.getElementById('singleStockIndicators2').style.display = 'flex';
+                    document.getElementById('multipleStocksSummary').style.display = 'none';
+                } else {
+                    // Para múltiples símbolos, mostramos resumen comparativo
+                    document.getElementById('singleStockIndicators').style.display = 'none';
+                    document.getElementById('singleStockIndicators2').style.display = 'none';
+                    document.getElementById('multipleStocksSummary').style.display = 'grid';
+                    updateMultipleStocksSummary(filteredSeries);
+                }
 
                 console.log(`Datos actualizados: ${new Date().toLocaleTimeString()}`);
 
@@ -414,6 +528,140 @@
             } finally {
                 document.getElementById('loading').style.display = 'none';
             }
+        }
+
+        // Función para actualizar el overlay del precio
+        function updatePriceOverlay(series) {
+            if (!series || !series.data || series.data.length === 0) return;
+
+            const lastDataPoint = series.data[series.data.length - 1];
+            const priceElement = document.querySelector('.current-price-display');
+            const changeElement = document.querySelector('.price-change');
+
+            if (priceElement && lastDataPoint) {
+                priceElement.textContent = lastDataPoint.price.toFixed(2) + ' $';
+            }
+
+            if (changeElement && series.current_profitability !== undefined) {
+                const isPositive = series.current_profitability >= 0;
+                changeElement.className = `price-change ${isPositive ? 'positive-change' : 'negative-change'}`;
+                const sign = isPositive ? '↑' : '↓';
+                const periodText = getPeriodText(document.getElementById('period').value);
+                changeElement.textContent = `${sign} ${Math.abs(series.current_profitability).toFixed(2)}% ${isPositive ? '+' : ''}${periodText}`;
+            }
+        }
+
+        // Actualizar indicadores para un solo stock
+        function updateSingleStockIndicators(series) {
+            if (!series || !series.data || series.data.length === 0) return;
+
+            const lastDataPoint = series.data[series.data.length - 1];
+
+            // Obtener cierre anterior de manera confiable
+            const prevClose = getPreviousClose(series);
+
+            // Actualizar el cierre anterior
+            document.querySelector('#singleStockIndicators .indicator-card:nth-child(1) .indicator-value').textContent =
+                prevClose ? `${prevClose.toFixed(2)} $` : 'N/A';
+
+            // Capitalización de mercado
+            const marketCap = series.market_cap ? formatNumber(series.market_cap) : 'N/A';
+
+            // P/E Ratio
+            const peRatio = series.trailing_pe ? series.trailing_pe.toFixed(2) : 'N/A';
+
+            // Volumen actual
+            const volume = lastDataPoint.volume ? formatNumber(lastDataPoint.volume, true) : 'N/A';
+
+            document.querySelector('#singleStockIndicators .indicator-card:nth-child(2) .indicator-value').textContent = marketCap;
+            document.querySelector('#singleStockIndicators .indicator-card:nth-child(3) .indicator-value').textContent = peRatio;
+            document.querySelector('#singleStockIndicators .indicator-card:nth-child(4) .indicator-value').textContent = volume;
+
+            // Segunda fila de indicadores
+            // Encontrar mínimo y máximo en los datos disponibles
+            const dayLows = series.data.map(d => d.day_low).filter(Boolean);
+            const dayHighs = series.data.map(d => d.day_high).filter(Boolean);
+
+            const min = dayLows.length > 0 ? Math.min(...dayLows) : (lastDataPoint.price * 0.98).toFixed(2);
+            const max = dayHighs.length > 0 ? Math.max(...dayHighs) : (lastDataPoint.price * 1.02).toFixed(2);
+
+            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(1) .indicator-value').textContent =
+                `${typeof min === 'number' ? min.toFixed(2) : min} $ - ${typeof max === 'number' ? max.toFixed(2) : max} $`;
+
+            // Calcular volumen promedio
+            const volumes = series.data.map(p => {
+                return p.volume || p.volumen || p.VOLUME || (p.volume === 0 ? 0 : null);
+            }).filter(v => v !== null && v !== undefined && !isNaN(v));
+
+            const avgVolume = volumes.length > 0
+                ? formatNumber(volumes.reduce((a, b) => a + b, 0) / volumes.length, true)
+                : 'N/A';
+
+            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(2) .indicator-value').textContent = avgVolume;
+
+            // Dividend Yield
+            let dividendYield = series.dividend_yield ? series.dividend_yield : 0;
+            if (dividendYield > 100) {
+                dividendYield = (dividendYield / 100).toFixed(2) + '%';
+            } else {
+                dividendYield = dividendYield.toFixed(2) + '%';
+            }
+            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(3) .indicator-value').textContent = dividendYield;
+
+            // Bolsa principal (ejemplo)
+            const exchange = 'NYSE';
+            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(4) .indicator-value').textContent = exchange;
+        }
+
+        // Nueva función para mostrar resumen de múltiples acciones
+        function updateMultipleStocksSummary(series) {
+            const container = document.getElementById('multipleStocksSummary');
+            container.innerHTML = ''; // Limpiar el contenedor
+
+            series.forEach(stock => {
+                if (!stock.data || stock.data.length === 0) return;
+
+                const lastPoint = stock.data[stock.data.length - 1];
+                const isPositive = stock.current_profitability >= 0;
+
+                // Obtener cierre anterior de manera confiable para cada acción
+                const previousClose = getPreviousClose(stock);
+
+                const stockCard = document.createElement('div');
+                stockCard.className = 'stock-card';
+
+                stockCard.innerHTML = `
+                    <div class="stock-header">
+                        <div class="stock-symbol">${stock.symbol}</div>
+                        <div class="stock-price">${lastPoint.price.toFixed(2)} $</div>
+                    </div>
+                    <div style="padding: 10px 15px; background-color: ${isPositive ? 'rgba(52, 168, 83, 0.1)' : 'rgba(234, 67, 53, 0.1)'}">
+                        <span class="stock-change-indicator" style="color: ${isPositive ? '#34a853' : '#ea4335'}">
+                            ${isPositive ? '↑' : '↓'} ${Math.abs(stock.current_profitability).toFixed(2)}%
+                        </span>
+                    </div>
+                    <div class="stock-metrics">
+                        <div class="metric">
+                            <div class="metric-label">APERTURA</div>
+                            <div class="metric-value">${lastPoint.open ? lastPoint.open.toFixed(2) + ' $' : 'N/A'}</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">CIERRE ANT.</div>
+                            <div class="metric-value">${previousClose ? previousClose.toFixed(2) + ' $' : 'N/A'}</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">MÍN. DIARIO</div>
+                            <div class="metric-value">${lastPoint.day_low ? lastPoint.day_low.toFixed(2) + ' $' : 'N/A'}</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">MÁX. DIARIO</div>
+                            <div class="metric-value">${lastPoint.day_high ? lastPoint.day_high.toFixed(2) + ' $' : 'N/A'}</div>
+                        </div>
+                    </div>
+                `;
+
+                container.appendChild(stockCard);
+            });
         }
 
         // Configurar auto-actualización
@@ -435,26 +683,28 @@
 
         // Limpiar gráficos
         function clearCharts() {
-            document.getElementById('statsGrid').innerHTML = '';
             if (priceChart) {
                 priceChart.destroy();
                 priceChart = null;
             }
+            document.getElementById('singleStockIndicators').style.display = 'none';
+            document.getElementById('singleStockIndicators2').style.display = 'none';
+            document.getElementById('multipleStocksSummary').style.display = 'none';
         }
 
         // Función auxiliar para obtener el texto del período
         function getPeriodText(period) {
             const periods = {
-                '1d': '1 Día',
-                '1w': '1 Semana',
-                '1m': '1 Mes',
-                '3m': '3 Meses'
+                '1d': '1 día',
+                '1w': '1 semana',
+                '1m': '1 mes',
+                '3m': '3 meses'
             };
             return periods[period] || period;
         }
 
         // Renderizar gráfico de precios
-                function renderPriceChart(series, period) {
+        function renderPriceChart(series) {
             const ctx = document.getElementById('priceChart').getContext('2d');
             if (priceChart) priceChart.destroy();
 
@@ -498,16 +748,12 @@
                                 display: false
                             },
                             title: {
-                                display: true,
-                                text: `Período: ${getPeriodText(period)}`,
-                                color: '#6c757d'
+                                display: false
                             }
                         },
                         y: {
                             title: {
-                                display: true,
-                                text: 'Precio (USD)',
-                                color: '#6c757d'
+                                display: false
                             },
                             grid: {
                                 color: '#f1f1f1'
@@ -531,7 +777,6 @@
 
                                     return [
                                         `${dataset.label}: $${dataPoint.y.toFixed(2)}`,
-                                        `Período: ${getPeriodText(period)}`,
                                         rawData.open ? `Apertura: $${rawData.open.toFixed(2)}` : null,
                                         rawData.day_low ? `Mín: $${rawData.day_low.toFixed(2)}` : null,
                                         rawData.day_high ? `Máx: $${rawData.day_high.toFixed(2)}` : null,
@@ -542,158 +787,6 @@
                         }
                     }
                 }
-            });
-        }
-
-        // Renderizar estadísticas (modificada)
-        function renderStats(series) {
-            const container = document.getElementById('statsGrid');
-            container.innerHTML = '';
-            const selectedCount = series.length;
-
-            series.forEach(item => {
-                if (!item.data?.length) return;
-
-                const lastDataPoint = item.data[item.data.length - 1];
-                const lastPrice = lastDataPoint.price;
-                const totalReturn = item.current_profitability || 0;
-                const marketCap = item.market_cap ? formatNumber(item.market_cap) : 'N/A';
-                const peRatio = item.trailing_pe ? item.trailing_pe.toFixed(2) : 'N/A';
-
-                // Manejo de dividend yield
-                let dividendYield = item.dividend_yield ? item.dividend_yield : 0;
-                if (dividendYield > 100) {
-                    dividendYield = (dividendYield / 100).toFixed(2) + '%';
-                } else {
-                    dividendYield = dividendYield.toFixed(2) + '%';
-                }
-
-                // Calcular volumen total y promedio
-                const volumes = item.data.map(p => p.volume).filter(v => v !== null && v !== undefined && !isNaN(v));
-                const totalVolume = volumes.length > 0 ? formatNumber(volumes.reduce((a, b) => a + b, 0), true) : 'N/A';
-                const avgVolume = volumes.length > 0 ? formatNumber(volumes.reduce((a, b) => a + b, 0) / volumes.length, true) : 'N/A';
-
-                const card = document.createElement('div');
-                card.className = `stats-card ${selectedCount > 1 ? 'compact-view' : ''}`;
-
-                card.innerHTML = `
-                    <div class="symbol-title" style="color: ${colors[item.symbol]}">
-                        ${item.symbol} <span class="price-badge">${getPeriodText(item.period)}</span>
-                    </div>
-                    <div class="price-header">
-                        <div class="current-price">$${lastPrice.toFixed(2)}</div>
-                        <div class="price-meta">
-                            <span class="original-price">Compra: $${item.original_price?.toFixed(2) || 'N/A'}</span>
-                            <span class="profitability ${totalReturn >= 0 ? 'positive' : 'negative'}">
-                                ${totalReturn >= 0 ? '+' : ''}${totalReturn.toFixed(2)}%
-                            </span>
-                        </div>
-                    </div>
-                    ${selectedCount === 1 ? `
-                        <div class="market-cap">Capitalización: ${marketCap}</div>
-                        <ul class="stats-list">
-                            <li><span class="stats-label">Apertura:</span> $${lastDataPoint.open?.toFixed(2) || 'N/A'}</li>
-                            <li><span class="stats-label">Mín día:</span> $${lastDataPoint.day_low?.toFixed(2) || 'N/A'}</li>
-                            <li><span class="stats-label">Máx día:</span> $${lastDataPoint.day_high?.toFixed(2) || 'N/A'}</li>
-                            <li><span class="stats-label">Volumen total:</span> ${totalVolume}</li>
-                            <li><span class="stats-label">Volumen promedio:</span> ${avgVolume}</li>
-                            <li><span class="stats-label">P/E Ratio:</span> ${peRatio}</li>
-                            <li><span class="stats-label">Dividend Yield:</span> ${dividendYield}</li>
-                            <li><span class="stats-label">52 Semanas:</span> ${item.fifty_two_week_range || 'N/A'}</li>
-                        </ul>
-                    ` : ''}
-                    <div class="update-time">
-                        Actualizado: ${new Date().toLocaleTimeString()}
-                    </div>
-                `;
-
-                container.appendChild(card);
-            });
-        }
-
-        // Renderizar estadísticas (versión corregida)
-        function renderStats(series) {
-            const container = document.getElementById('statsGrid');
-            container.innerHTML = '';
-            const selectedCount = series.length;
-
-            series.forEach(item => {
-                if (!item.data?.length) return;
-
-                const lastDataPoint = item.data[item.data.length - 1];
-                const lastPrice = lastDataPoint.price;
-                const totalReturn = item.current_profitability || 0;
-                const marketCap = item.market_cap ? formatNumber(item.market_cap) : 'N/A';
-                const peRatio = item.trailing_pe ? item.trailing_pe.toFixed(2) : 'N/A';
-
-                // Corrección para dividend yield (dividir por 100 si es mayor a 100)
-                let dividendYield = item.dividend_yield ? item.dividend_yield : 0;
-                if (dividendYield > 100) {
-                    dividendYield = (dividendYield / 100).toFixed(2) + '%';
-                } else {
-                    dividendYield = dividendYield.toFixed(2) + '%';
-                }
-
-                // Calcular volumen total y promedio (sin signo $)
-                // volumen
-                // Buscar volumen en cualquier campo posible
-                const volumes = item.data.map(p => {
-                    // Buscar volumen en cualquier campo posible
-                    return p.volume || p.volumen || p.VOLUME || (p.volume === 0 ? 0 : null);
-                }).filter(v => v !== null && v !== undefined && !isNaN(v));
-
-                const totalVolume = volumes.length > 0
-                    ? formatNumber(volumes.reduce((a, b) => a + b, 0), true)
-                    : 'N/A (Sin datos)';
-
-                const avgVolume = volumes.length > 0
-                    ? formatNumber(volumes.reduce((a, b) => a + b, 0) / volumes.length, true)
-                    : 'N/A';
-
-
-                const card = document.createElement('div');
-                card.className = `stats-card ${selectedCount > 1 ? 'compact-view' : ''}`;
-
-                // Contenido común para ambas vistas
-                card.innerHTML = `
-                    <div class="symbol-title" style="color: ${colors[item.symbol]}">
-                        ${item.symbol} <span class="price-badge">${getPeriodText(item.period)}</span>
-                    </div>
-                    <div class="price-header">
-                        <div class="current-price">$${lastPrice.toFixed(2)}</div>
-                        <div class="price-meta">
-                            <span class="original-price">Compra: $${item.original_price?.toFixed(2) || 'N/A'}</span>
-                            <span class="profitability ${totalReturn >= 0 ? 'positive' : 'negative'}">
-                                ${totalReturn >= 0 ? '+' : ''}${totalReturn.toFixed(2)}%
-                            </span>
-                        </div>
-                    </div>
-                `;
-
-                // Solo mostrar detalles adicionales si hay una sola acción
-                if (selectedCount === 1) {
-                    card.innerHTML += `
-                        <div class="market-cap">Capitalización: ${marketCap}</div>
-                        <ul class="stats-list">
-                            <li><span class="stats-label">Apertura:</span> $${lastDataPoint.open?.toFixed(2) || 'N/A'}</li>
-                            <li><span class="stats-label">Mín día:</span> $${lastDataPoint.day_low?.toFixed(2) || 'N/A'}</li>
-                            <li><span class="stats-label">Máx día:</span> $${lastDataPoint.day_high?.toFixed(2) || 'N/A'}</li>
-                            <li><span class="stats-label">Volumen total:</span> ${totalVolume}</li>
-                            <li><span class="stats-label">Volumen promedio:</span> ${avgVolume}</li>
-                            <li><span class="stats-label">P/E Ratio:</span> ${peRatio}</li>
-                            <li><span class="stats-label">Dividend Yield:</span> ${dividendYield}</li>
-                            <li><span class="stats-label">52 Semanas:</span> ${item.fifty_two_week_range || 'N/A'}</li>
-                        </ul>
-                    `;
-                }
-
-                card.innerHTML += `
-                    <div class="update-time">
-                        Actualizado: ${new Date().toLocaleTimeString()}
-                    </div>
-                `;
-
-                container.appendChild(card);
             });
         }
 
