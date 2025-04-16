@@ -304,7 +304,7 @@
                 <label>Período:</label>
                 <select id="period">
                     <option value="1d">1 Día</option>
-                    <option value="5d" selected>5 Días</option>
+                    <option value="1w" selected>1 Semana</option>
                     <option value="1m">1 Mes</option>
                     <option value="3m">3 Meses</option>
                 </select>
@@ -696,32 +696,39 @@
         function getPeriodText(period) {
             const periods = {
                 '1d': '1 día',
-                '5d': '5 días',
+                '1w': '1 semana',
                 '1m': '1 mes',
                 '3m': '3 meses'
             };
             return periods[period] || period;
         }
 
-        // Renderizar gráfico de precios
+                // Renderizar gráfico de precios
         function renderPriceChart(series) {
             const ctx = document.getElementById('priceChart').getContext('2d');
             if (priceChart) priceChart.destroy();
+
+            const period = document.getElementById('period').value;
+            const isDailyView = period === '1w' || period === '1m' || period === '3m';
 
             priceChart = new Chart(ctx, {
                 type: 'line',
                 data: {
                     datasets: series.map(item => ({
                         label: item.symbol,
-                        data: item.data.map(point => ({
-                            x: point.timestamp,
-                            y: point.price
-                        })),
+                        data: isDailyView ?
+                            // Para vista diaria: tomamos solo un punto por día (el último de cada día)
+                            getDailyPoints(item.data) :
+                            // Para vista intradía: mostramos todos los puntos
+                            item.data.map(point => ({
+                                x: point.timestamp,
+                                y: point.price
+                            })),
                         borderColor: colors[item.symbol],
                         backgroundColor: colors[item.symbol] + '20',
                         tension: 0.1,
                         borderWidth: 2,
-                        pointRadius: 0,
+                        pointRadius: isDailyView ? 3 : 0, // Mostrar puntos en vista diaria
                         fill: false
                     }))
                 },
@@ -736,13 +743,14 @@
                         x: {
                             type: 'time',
                             time: {
-                                tooltipFormat: 'DD/MM/YYYY HH:mm',
+                                tooltipFormat: isDailyView ? 'DD/MM/YYYY' : 'DD/MM/YYYY HH:mm',
                                 displayFormats: {
-                                    hour: 'HH:mm',
+                                    hour: isDailyView ? 'DD/MM' : 'HH:mm',
                                     day: 'DD/MM',
                                     week: 'DD/MM',
                                     month: 'MMM'
-                                }
+                                },
+                                unit: isDailyView ? 'day' : undefined // Forzar unidad día en vista diaria
                             },
                             grid: {
                                 display: false
@@ -757,11 +765,6 @@
                             },
                             grid: {
                                 color: '#f1f1f1'
-                            },
-                            ticks: {
-                                callback: function(value) {
-                                    return value.toFixed(2);
-                                }
                             }
                         }
                     },
@@ -778,7 +781,9 @@
                                 label: function(context) {
                                     const dataset = context.dataset;
                                     const dataPoint = dataset.data[context.dataIndex];
-                                    const rawData = series.find(s => s.symbol === dataset.label).data[context.dataIndex];
+                                    const rawData = isDailyView ?
+                                        context.dataset.rawData[context.dataIndex] :
+                                        series.find(s => s.symbol === dataset.label).data[context.dataIndex];
 
                                     return [
                                         `${dataset.label}: $${dataPoint.y.toFixed(2)}`,
@@ -795,6 +800,33 @@
             });
         }
 
+        // Función auxiliar para obtener un punto por día (el último de cada día)
+        function getDailyPoints(data) {
+            const dailyPoints = [];
+            const daysMap = new Map();
+
+            // Agrupar puntos por día
+            data.forEach(point => {
+                const date = new Date(point.timestamp);
+                const dayKey = `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+
+                if (!daysMap.has(dayKey) ||
+                    new Date(point.timestamp) > new Date(daysMap.get(dayKey).timestamp)) {
+                    daysMap.set(dayKey, point);
+                }
+            });
+
+            // Convertir el mapa a array de puntos
+            daysMap.forEach(point => {
+                dailyPoints.push({
+                    x: point.timestamp,
+                    y: point.price,
+                    rawData: point // Guardamos los datos originales para el tooltip
+                });
+            });
+
+            return dailyPoints;
+        }
         // Event Listeners
         document.addEventListener('DOMContentLoaded', () => {
             updateCharts();

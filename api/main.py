@@ -44,6 +44,8 @@ ORIGINAL_PRICES = {
     "ILF": 24.10      # iShares Latin America 40 ETF
 }
 
+
+# Definimos los datos fijos del portfolio según lo proporcionado
 PORTFOLIO_DATA = {
     "BAP": {
         "description": "Credicorp Ltd.",
@@ -61,10 +63,6 @@ PORTFOLIO_DATA = {
         "qty": 200
     }
 }
-
-
-
-
 # ----------
 
 # Configuración de logging
@@ -159,6 +157,8 @@ class PortfolioHoldings(BaseModel):
     total_gain_loss: float
     total_gain_loss_percent: float
     holdings: List[StockHolding]
+
+
 
 
 # Creación de la aplicación FastAPI
@@ -797,7 +797,7 @@ async def get_time_series_with_profitability(
     """Obtiene series temporales con información de rentabilidad, volumen y PE Ratio"""
     periods_map = {
         "1d": timedelta(days=1),
-        "5d": timedelta(days=5),
+        "1w": timedelta(weeks=1),
         "1m": timedelta(days=30),
         "3m": timedelta(days=90)
     }
@@ -1125,14 +1125,6 @@ async def get_symbol_profitability_html(symbol: str):
     return FileResponse(os.path.join(static_dir, "symbol_profitability.html"))
 
 
-# HTML Endpoint para visualizar los datos del portfolio
-@app.get("/html/portfolio/holdings", response_class=HTMLResponse)
-async def get_portfolio_holdings_html():
-    """
-    Sirve la página HTML para mostrar las posiciones de la cartera.
-    """
-    return FileResponse(os.path.join(static_dir, "portfolio_holdings.html"))
-
 
 #---PLOTS
 
@@ -1154,6 +1146,16 @@ async def serve_timeseries_html():
 async def get_timeseries_profitability_html():
     """Sirve la interfaz de análisis completo"""
     return FileResponse(os.path.join(static_dir, "timeseries-profitability.html"))
+
+
+# HTML Endpoint para visualizar los datos del portfolio
+@app.get("/html/portfolio/holdings", response_class=HTMLResponse)
+async def get_portfolio_holdings_html():
+    """
+    Sirve la página HTML para mostrar las posiciones de la cartera.
+    """
+    return FileResponse(os.path.join(static_dir, "portfolio_holdings.html"))
+
 
 @app.get("/html")
 async def get_html_index():
