@@ -304,7 +304,7 @@
                 <label>Período:</label>
                 <select id="period">
                     <option value="1d">1 Día</option>
-                    <option value="1w" selected>1 Semana</option>
+                    <option value="5d" selected>5 Días</option>
                     <option value="1m">1 Mes</option>
                     <option value="3m">3 Meses</option>
                 </select>
@@ -696,7 +696,7 @@
         function getPeriodText(period) {
             const periods = {
                 '1d': '1 día',
-                '1w': '1 semana',
+                '5d': '5 días',
                 '1m': '1 mes',
                 '3m': '3 meses'
             };
@@ -757,6 +757,11 @@
                             },
                             grid: {
                                 color: '#f1f1f1'
+                            },
+                            ticks: {
+                                callback: function(value) {
+                                    return value.toFixed(2);
+                                }
                             }
                         }
                     },

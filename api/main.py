@@ -44,6 +44,27 @@ ORIGINAL_PRICES = {
     "ILF": 24.10      # iShares Latin America 40 ETF
 }
 
+PORTFOLIO_DATA = {
+    "BAP": {
+        "description": "Credicorp Ltd.",
+        "purchase_price": 184.88,
+        "qty": 26
+    },
+    "BRK-B": {  # Nota: En la API usamos BRK-B, aunque el ticker completo es BRK.B
+        "description": "Berkshire Hathaway Inc. Class B",
+        "purchase_price": 479.20,
+        "qty": 10
+    },
+    "ILF": {
+        "description": "iShares Latin America 40 ETF",
+        "purchase_price": 24.10,
+        "qty": 200
+    }
+}
+
+
+
+
 # ----------
 
 # Configuración de logging
@@ -119,6 +140,25 @@ class SymbolFinancialData(BaseModel):
     stats: Dict[str, float]
 
 
+class StockHolding(BaseModel):
+    symbol: str
+    description: str
+    current_price: float
+    todays_change: float
+    todays_change_percent: float
+    purchase_price: float
+    qty: int
+    total_value: float
+    total_gain_loss: float
+    total_gain_loss_percent: float
+
+class PortfolioHoldings(BaseModel):
+    total_value: float
+    todays_change: float
+    todays_change_percent: float
+    total_gain_loss: float
+    total_gain_loss_percent: float
+    holdings: List[StockHolding]
 
 
 # Creación de la aplicación FastAPI
@@ -757,7 +797,7 @@ async def get_time_series_with_profitability(
     """Obtiene series temporales con información de rentabilidad, volumen y PE Ratio"""
     periods_map = {
         "1d": timedelta(days=1),
-        "1w": timedelta(weeks=1),
+        "5d": timedelta(days=5),
         "1m": timedelta(days=30),
         "3m": timedelta(days=90)
     }
@@ -888,6 +928,97 @@ async def get_time_series_with_profitability(
 
     return TimeSeriesResponse(series=result)
 
+
+@app.get("/portfolio/holdings/live", response_model=PortfolioHoldings)
+def get_portfolio_holdings_live():
+    """
+    Obtiene los datos de la cartera en tiempo real, calculando los valores con los datos más recientes.
+    Utiliza información fija de cantidad de acciones y precios de compra.
+
+    Returns:
+        PortfolioHoldings: Objeto con información completa de la cartera
+    """
+    holdings = []
+    portfolio_total_value = 0
+    portfolio_todays_change_value = 0
+    portfolio_total_gain_loss = 0
+    portfolio_previous_value = 0
+
+    for symbol, data in PORTFOLIO_DATA.items():
+        # Obtener datos actuales del símbolo
+        current_data = get_latest_data(symbol)
+
+        if current_data is None:
+            logger.error(f"No se encontraron datos para {symbol}")
+            continue
+
+        # Extraer valores necesarios con manejo de errores
+        current_price = current_data.get('currentPrice')
+        previous_close = current_data.get('previousClose')
+
+        # Si no hay previous_close, usar un valor estimado para evitar errores
+        if previous_close is None and current_price is not None:
+            logger.warning(f"Sin datos de cierre previo para {symbol}, usando precio actual")
+            previous_close = current_price
+
+        if current_price is None:
+            logger.error(f"Sin precio actual para {symbol}")
+            continue
+
+        # Valores del portfolio para este símbolo
+        purchase_price = data["purchase_price"]
+        qty = data["qty"]
+
+        # Calcular el cambio diario
+        todays_change = current_price - previous_close
+        todays_change_percent = (todays_change / previous_close) * 100 if previous_close > 0 else 0
+
+        # Calcular el valor total actual
+        total_value = current_price * qty
+
+        # Calcular la ganancia/pérdida total
+        total_gain_loss = total_value - (purchase_price * qty)
+        total_gain_loss_percent = (total_gain_loss / (purchase_price * qty)) * 100 if purchase_price > 0 else 0
+
+        # Actualizar totales del portfolio
+        portfolio_total_value += total_value
+        portfolio_todays_change_value += todays_change * qty
+        portfolio_total_gain_loss += total_gain_loss
+        portfolio_previous_value += previous_close * qty
+
+        # Crear objeto de holding con valores redondeados para mejor presentación
+        holding = StockHolding(
+            symbol=symbol,
+            description=data["description"],
+            current_price=round(current_price, 2),
+            todays_change=round(todays_change, 2),
+            todays_change_percent=round(todays_change_percent, 2),
+            purchase_price=round(purchase_price, 2),
+            qty=qty,
+            total_value=round(total_value, 2),
+            total_gain_loss=round(total_gain_loss, 2),
+            total_gain_loss_percent=round(total_gain_loss_percent, 2)
+        )
+        holdings.append(holding)
+
+    # Calcular porcentajes totales del portfolio
+    portfolio_initial_value = portfolio_total_value - portfolio_total_gain_loss
+    portfolio_todays_change_percent = (
+                                                  portfolio_todays_change_value / portfolio_previous_value) * 100 if portfolio_previous_value > 0 else 0
+    portfolio_total_gain_loss_percent = (
+                                                    portfolio_total_gain_loss / portfolio_initial_value) * 100 if portfolio_initial_value > 0 else 0
+
+    # Crear objeto final con valores redondeados
+    return PortfolioHoldings(
+        total_value=round(portfolio_total_value, 2),
+        todays_change=round(portfolio_todays_change_value, 2),
+        todays_change_percent=round(portfolio_todays_change_percent, 2),
+        total_gain_loss=round(portfolio_total_gain_loss, 2),
+        total_gain_loss_percent=round(portfolio_total_gain_loss_percent, 2),
+        holdings=holdings
+    )
+
+
 @app.post("/refresh")
 def refresh_data(background_tasks: BackgroundTasks):
     """
@@ -993,6 +1124,14 @@ async def get_symbol_profitability_html(symbol: str):
     """
     return FileResponse(os.path.join(static_dir, "symbol_profitability.html"))
 
+
+# HTML Endpoint para visualizar los datos del portfolio
+@app.get("/html/portfolio/holdings", response_class=HTMLResponse)
+async def get_portfolio_holdings_html():
+    """
+    Sirve la página HTML para mostrar las posiciones de la cartera.
+    """
+    return FileResponse(os.path.join(static_dir, "portfolio_holdings.html"))
 
 
 #---PLOTS
