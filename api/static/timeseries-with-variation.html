@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monitor de Variación de Acciones</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/moment"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f8f9fa;
+            color: #333;
+        }
+        .dashboard {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .controls {
+            background: white;
+            padding: 15px 20px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 15px;
+            grid-column: 1 / -1;
+        }
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .chart-container {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+            height: fit-content;
+            position: relative;
+        }
+        .variation-overlay {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 100;
+            background-color: rgba(255, 255, 255, 0.9);
+            padding: 8px 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            transition: opacity 0.3s ease;
+        }
+        .variation-overlay.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+        .current-variation-display {
+            font-size: 24px;
+            font-weight: 700;
+        }
+        .variation-change {
+            font-size: 14px;
+            font-weight: 500;
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+        .positive-change {
+            color: #34a853;
+            background-color: rgba(52, 168, 83, 0.1);
+        }
+        .negative-change {
+            color: #ea4335;
+            background-color: rgba(234, 67, 53, 0.1);
+        }
+        .checkbox-container {
+            display: flex;
+            gap: 15px;
+            margin-top: 10px;
+            flex-wrap: wrap;
+        }
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 14px;
+        }
+        canvas {
+            max-height: 500px;
+            width: 100% !important;
+        }
+        select, button {
+            padding: 8px 15px;
+            border-radius: 6px;
+            border: 1px solid #ced4da;
+            font-size: 14px;
+            background-color: white;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background: #0069d9;
+        }
+        .error-message {
+            background-color: #f8d7da;
+            color: #721c24;
+            padding: 12px 15px;
+            border-radius: 6px;
+            margin: 15px 0;
+            display: none;
+            grid-column: 1 / -1;
+            border: 1px solid #f5c6cb;
+        }
+        .loading {
+            text-align: center;
+            padding: 25px;
+            grid-column: 1 / -1;
+            color: #6c757d;
+        }
+
+        /* Indicadores de mercado */
+        .market-indicators {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 20px;
+            width: 100%;
+        }
+        .indicator-card {
+            background-color: #fff;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 10px 15px;
+            flex: 1;
+            min-width: 150px;
+        }
+        .indicator-label {
+            font-size: 12px;
+            color: #70757a;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+        }
+        .indicator-value {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        /* Resumen de acciones */
+        .stocks-summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+        .stock-card {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        .stock-header {
+            padding: 15px;
+            border-bottom: 1px solid #f0f0f0;
+            display: flex;
+            justify-content: space-between;
+        }
+        .stock-symbol {
+            font-size: 18px;
+            font-weight: 700;
+        }
+        .stock-variation {
+            font-size: 20px;
+            font-weight: 600;
+        }
+        .stock-metrics {
+            padding: 15px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+        .metric-label {
+            font-size: 12px;
+            color: #70757a;
+        }
+        .metric-value {
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        @media (max-width: 768px) {
+            .market-indicators {
+                flex-direction: column;
+            }
+            .indicator-card {
+                width: 100%;
+            }
+            .stocks-summary {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="dashboard">
+        <div class="controls">
+            <div class="control-group">
+                <label>Período:</label>
+                <select id="period">
+                    <option value="1d">1 Día</option>
+                    <option value="1w" selected>1 Semana</option>
+                    <option value="1m">1 Mes</option>
+                    <option value="3m">3 Meses</option>
+                </select>
+            </div>
+
+            <div>
+                <label>Acciones:</label>
+                <div class="checkbox-container">
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="symbol-BAP" value="BAP" checked>
+                        <label for="symbol-BAP">BAP</label>
+                    </div>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="symbol-BRK-B" value="BRK-B">
+                        <label for="symbol-BRK-B">BRK-B</label>
+                    </div>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="symbol-ILF" value="ILF">
+                        <label for="symbol-ILF">ILF</label>
+                    </div>
+                </div>
+            </div>
+
+            <button onclick="updateCharts()">Actualizar</button>
+
+            <div class="auto-update-toggle">
+                <span>Auto-actualizar:</span>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="autoUpdateToggle" checked>
+                    <span class="slider"></span>
+                </label>
+            </div>
+        </div>
+
+        <div id="errorMessage" class="error-message"></div>
+        <div id="loading" class="loading" style="display: none;">
+            <div style="margin-bottom: 10px;">Cargando datos...</div>
+        </div>
+
+        <div class="chart-container">
+            <div class="variation-overlay">
+                <span class="current-variation-display positive-change">+5.18%</span>
+                <span class="variation-change positive-change">↑ +9.41% (6 meses)</span>
+            </div>
+            <canvas id="variationChart"></canvas>
+        </div>
+
+        <!-- Indicadores de mercado -->
+        <div class="market-indicators" id="singleStockIndicators">
+            <div class="indicator-card">
+                <div class="indicator-label">VARIACIÓN 1D</div>
+                <div class="indicator-value positive-change">+2.15%</div>
+            </div>
+            <div class="indicator-card">
+                <div class="indicator-label">VARIACIÓN 1M</div>
+                <div class="indicator-value negative-change">-1.87%</div>
+            </div>
+            <div class="indicator-card">
+                <div class="indicator-label">VARIACIÓN 3M</div>
+                <div class="indicator-value positive-change">+5.42%</div>
+            </div>
+            <div class="indicator-card">
+                <div class="indicator-label">VOLATILIDAD</div>
+                <div class="indicator-value">1.85%</div>
+            </div>
+        </div>
+
+        <div class="market-indicators" id="singleStockIndicators2">
+            <div class="indicator-card">
+                <div class="indicator-label">MEJOR DÍA</div>
+                <div class="indicator-value positive-change">+3.25% (15/04)</div>
+            </div>
+            <div class="indicator-card">
+                <div class="indicator-label">PEOR DÍA</div>
+                <div class="indicator-value negative-change">-2.10% (08/04)</div>
+            </div>
+            <div class="indicator-card">
+                <div class="indicator-label">MEDIA 30D</div>
+                <div class="indicator-value">+0.45%</div>
+            </div>
+            <div class="indicator-card">
+                <div class="indicator-label">RENT. ANUAL</div>
+                <div class="indicator-value positive-change">+18.25%</div>
+            </div>
+        </div>
+
+        <!-- Resumen para múltiples acciones -->
+        <div class="stocks-summary" id="multipleStocksSummary" style="display: none;"></div>
+    </div>
+
+    <script>
+        // Variables globales
+        let variationChart;
+        let autoUpdateInterval;
+        const colors = {
+            'BAP': '#007bff',
+            'BRK-B': '#28a745',
+            'ILF': '#dc3545'
+        };
+
+        // Función principal para actualizar los gráficos
+        async function updateCharts() {
+            const period = document.getElementById('period').value;
+            const selectedSymbols = getSelectedSymbols();
+
+            if (selectedSymbols.length === 0) {
+                showError('Seleccione al menos una acción');
+                return;
+            }
+
+            // Mostrar/ocultar elementos según selección
+            const variationOverlay = document.querySelector('.variation-overlay');
+            variationOverlay.classList.toggle('hidden', selectedSymbols.length > 1);
+
+            // Mostrar carga
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('errorMessage').style.display = 'none';
+
+            try {
+                const response = await axios.get('/api/timeseries-with-variation', {
+                    params: {
+                        symbol: selectedSymbols[0],
+                        period: period,
+                        compare_all: selectedSymbols.length > 1
+                    }
+                });
+
+                if (!response.data?.series?.length) {
+                    throw new Error('No se recibieron datos válidos');
+                }
+
+                renderVariationChart(response.data.series);
+
+                if (selectedSymbols.length === 1) {
+                    updateVariationOverlay(response.data.series[0]);
+                    updateSingleStockIndicators(response.data.series[0]);
+                    document.getElementById('singleStockIndicators').style.display = 'flex';
+                    document.getElementById('singleStockIndicators2').style.display = 'flex';
+                    document.getElementById('multipleStocksSummary').style.display = 'none';
+                } else {
+                    document.getElementById('singleStockIndicators').style.display = 'none';
+                    document.getElementById('singleStockIndicators2').style.display = 'none';
+                    document.getElementById('multipleStocksSummary').style.display = 'grid';
+                    updateMultipleStocksSummary(response.data.series);
+                }
+
+            } catch (error) {
+                console.error('Error:', error);
+                showError('Error al cargar datos: ' + error.message);
+                clearCharts();
+            } finally {
+                document.getElementById('loading').style.display = 'none';
+            }
+        }
+
+        // Función para actualizar el overlay de variación
+        function updateVariationOverlay(series) {
+            if (!series || !series.data || series.data.length === 0) return;
+
+            const lastVariation = series.data[series.data.length - 1].variation;
+            const variationElement = document.querySelector('.current-variation-display');
+            const changeElement = document.querySelector('.variation-change');
+
+            if (variationElement) {
+                const isPositive = lastVariation >= 0;
+                variationElement.textContent = `${isPositive ? '+' : ''}${lastVariation.toFixed(2)}%`;
+                variationElement.className = `current-variation-display ${isPositive ? 'positive-change' : 'negative-change'}`;
+            }
+
+            if (changeElement && series.stats) {
+                const isPositive = series.stats.current_variation >= 0;
+                changeElement.className = `variation-change ${isPositive ? 'positive-change' : 'negative-change'}`;
+                const sign = isPositive ? '↑' : '↓';
+                changeElement.textContent = `${sign} ${Math.abs(series.stats.current_variation).toFixed(2)}% (${getPeriodText(document.getElementById('period').value})`;
+            }
+        }
+
+        // Actualizar indicadores para un solo stock
+        function updateSingleStockIndicators(series) {
+            if (!series || !series.stats) return;
+
+            const formatVariation = (value) => {
+                if (value === null || value === undefined) return 'N/A';
+                const isPositive = value >= 0;
+                return `<span class="${isPositive ? 'positive-change' : 'negative-change'}">${isPositive ? '+' : ''}${value.toFixed(2)}%</span>`;
+            };
+
+            // Primera fila de indicadores
+            document.querySelector('#singleStockIndicators .indicator-card:nth-child(1) .indicator-value').innerHTML =
+                formatVariation(series.stats.day_variation);
+
+            document.querySelector('#singleStockIndicators .indicator-card:nth-child(2) .indicator-value').innerHTML =
+                formatVariation(series.stats.month_variation);
+
+            document.querySelector('#singleStockIndicators .indicator-card:nth-child(3) .indicator-value').innerHTML =
+                formatVariation(series.stats.three_month_variation);
+
+            document.querySelector('#singleStockIndicators .indicator-card:nth-child(4) .indicator-value').textContent =
+                series.stats.volatility ? `${series.stats.volatility}%` : 'N/A';
+
+            // Segunda fila de indicadores
+            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(1) .indicator-value').innerHTML =
+                formatVariation(series.stats.max_variation);
+
+            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(2) .indicator-value').innerHTML =
+                formatVariation(series.stats.min_variation);
+
+            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(3) .indicator-value').innerHTML =
+                series.stats.avg_30_days ? formatVariation(series.stats.avg_30_days) : 'N/A';
+
+            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(4) .indicator-value').innerHTML =
+                formatVariation(series.stats.annualized_return);
+        }
+
+        // Actualizar resumen para múltiples acciones
+        function updateMultipleStocksSummary(series) {
+            const container = document.getElementById('multipleStocksSummary');
+            container.innerHTML = '';
+
+            series.forEach(stock => {
+                if (!stock.data || stock.data.length === 0) return;
+
+                const lastPoint = stock.data[stock.data.length - 1];
+                const isPositive = lastPoint.variation >= 0;
+
+                const stockCard = document.createElement('div');
+                stockCard.className = 'stock-card';
+
+                stockCard.innerHTML = `
+                    <div class="stock-header">
+                        <div class="stock-symbol">${stock.symbol}</div>
+                        <div class="stock-variation ${isPositive ? 'positive-change' : 'negative-change'}">
+                            ${isPositive ? '+' : ''}${lastPoint.variation.toFixed(2)}%
+                        </div>
+                    </div>
+                    <div class="stock-metrics">
+                        <div class="metric">
+                            <div class="metric-label">PRECIO ACTUAL</div>
+                            <div class="metric-value">$${lastPoint.price.toFixed(2)}</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">VAR. 1D</div>
+                            <div class="metric-value ${stock.stats.day_variation >= 0 ? 'positive-change' : 'negative-change'}">
+                                ${stock.stats.day_variation >= 0 ? '+' : ''}${stock.stats.day_variation.toFixed(2)}%
+                            </div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">VOLUMEN</div>
+                            <div class="metric-value">${formatNumber(lastPoint.volume, true)}</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">VOLATILIDAD</div>
+                            <div class="metric-value">${stock.stats.volatility}%</div>
+                        </div>
+                    </div>
+                `;
+
+                container.appendChild(stockCard);
+            });
+        }
+
+        // Renderizar gráfico de variación
+        function renderVariationChart(series) {
+            const ctx = document.getElementById('variationChart').getContext('2d');
+            if (variationChart) variationChart.destroy();
+
+            const period = document.getElementById('period').value;
+            const isDailyView = period !== '1d';
+
+            variationChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: series.map(item => ({
+                        label: item.symbol,
+                        data: isDailyView ?
+                            getDailyPoints(item.data) :
+                            item.data.map(point => ({
+                                x: point.timestamp,
+                                y: point.variation
+                            })),
+                        borderColor: colors[item.symbol],
+                        backgroundColor: colors[item.symbol] + '20',
+                        tension: 0.1,
+                        borderWidth: 2,
+                        pointRadius: isDailyView ? 3 : 0,
+                        fill: false
+                    }))
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                tooltipFormat: isDailyView ? 'DD/MM/YYYY' : 'DD/MM/YYYY HH:mm',
+                                displayFormats: {
+                                    hour: isDailyView ? 'DD/MM' : 'HH:mm',
+                                    day: 'DD/MM',
+                                    week: 'DD/MM',
+                                    month: 'MMM'
+                                },
+                                unit: isDailyView ? 'day' : undefined
+                            },
+                            grid: {
+                                display: false
+                            }
+                        },
+                        y: {
+                            ticks: {
+                                callback: function(value) {
+                                    return value + '%';
+                                }
+                            },
+                            title: {
+                                display: true,
+                                text: 'Variación porcentual'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'top'
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    const label = context.dataset.label || '';
+                                    const value = context.parsed.y;
+                                    return `${label}: ${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
+                                },
+                                afterLabel: function(context) {
+                                    const rawData = context.dataset.data[context.dataIndex].rawData;
+                                    return `Precio: $${rawData.price.toFixed(2)}\nVolumen: ${formatNumber(rawData.volume, true)}`;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Obtener un punto por día (para períodos > 1 día)
+        function getDailyPoints(data) {
+            const dailyPoints = [];
+            const daysMap = new Map();
+
+            data.forEach(point => {
+                const date = new Date(point.timestamp);
+                const dayKey = date.toISOString().split('T')[0];
+
+                if (!daysMap.has(dayKey) {
+                    daysMap.set(dayKey, {
+                        x: point.timestamp,
+                        y: point.variation,
+                        rawData: point
+                    });
+                }
+            });
+
+            return Array.from(daysMap.values());
+        }
+
+        // Configurar auto-actualización
+        function setupAutoUpdate() {
+            clearInterval(autoUpdateInterval);
+            if (document.getElementById('autoUpdateToggle').checked) {
+                autoUpdateInterval = setInterval(updateCharts, 60000);
+            }
+        }
+
+        // Mostrar errores
+        function showError(message) {
+            document.getElementById('errorMessage').textContent = message;
+            document.getElementById('errorMessage').style.display = 'block';
+        }
+
+        // Limpiar gráficos
+        function clearCharts() {
+            if (variationChart) {
+                variationChart.destroy();
+                variationChart = null;
+            }
+        }
+
+        // Formatear números
+        function formatNumber(num, isVolume = false) {
+            if (num === null || num === undefined) return 'N/A';
+            if (num >= 1e9) return (num / 1e9).toFixed(2) + 'B';
+            if (num >= 1e6) return (num / 1e6).toFixed(2) + 'M';
+            if (num >= 1e3) return (num / 1e3).toFixed(2) + 'K';
+            return num.toFixed(2);
+        }
+
+        // Obtener texto del período
+        function getPeriodText(period) {
+            const periods = {
+                '1d': '1 día',
+                '1w': '1 semana',
+                '1m': '1 mes',
+                '3m': '3 meses'
+            };
+            return periods[period] || period;
+        }
+
+        // Obtener símbolos seleccionados
+        function getSelectedSymbols() {
+            const symbols = [];
+            document.querySelectorAll('input[type="checkbox"]:checked').forEach(checkbox => {
+                symbols.push(checkbox.value);
+            });
+            return symbols;
+        }
+
+        // Inicialización
+        document.addEventListener('DOMContentLoaded', () => {
+            updateCharts();
+            setupAutoUpdate();
+
+            // Event listeners
+            document.getElementById('autoUpdateToggle').addEventListener('change', setupAutoUpdate);
+            document.getElementById('period').addEventListener('change', updateCharts);
+            document.querySelectorAll('input[type="checkbox"]').forEach(checkbox => {
+                checkbox.addEventListener('change', updateCharts);
+            });
+        });
+    </script>
+</body>
+</html>

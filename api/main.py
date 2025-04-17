@@ -929,6 +929,9 @@ async def get_time_series_with_profitability(
     return TimeSeriesResponse(series=result)
 
 
+
+
+
 @app.get("/portfolio/holdings/live", response_model=PortfolioHoldings)
 def get_portfolio_holdings_live():
     """
