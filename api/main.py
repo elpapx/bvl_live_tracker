@@ -99,6 +99,7 @@ class TimeSeriesPoint(BaseModel):
     open: Optional[float] = None
     day_low: Optional[float] = None
     day_high: Optional[float] = None
+    previous_close: Optional[float] = None
 
 class SymbolTimeSeries(BaseModel):
     symbol: str
@@ -115,6 +116,8 @@ class SymbolTimeSeries(BaseModel):
     market_cap: Optional[float] = None
     trailing_pe: Optional[float] = None
     dividend_yield: Optional[float] = None
+    daily_variation: float = 0.0
+    volatility: float = 0.0
 
 class TimeSeriesResponse(BaseModel):
     series: List[SymbolTimeSeries]
@@ -946,6 +949,154 @@ async def get_time_series_with_profitability(
     return TimeSeriesResponse(series=result)
 
 
+@app.get("/api/timeseries-variations", response_model=TimeSeriesResponse)
+async def get_time_series_variations(
+        symbol: str = Query("BAP", description="Símbolo a consultar (BAP, BRK-B, ILF)"),
+        period: str = Query("1w", description="Periodo (realtime, 1d, 1w, 1m, 3m)"),
+        compare_all: bool = Query(False, description="Mostrar todos los símbolos juntos")
+):
+    """Obtiene series temporales con información de variación porcentual entre precios"""
+    periods_map = {
+        "realtime": timedelta(hours=6),  # Últimas 6 horas para tiempo real
+        "1d": timedelta(days=1),
+        "1w": timedelta(weeks=1),
+        "1m": timedelta(days=30),
+        "3m": timedelta(days=90)
+    }
+
+    symbols_to_fetch = ["BAP", "BRK-B", "ILF"] if compare_all else [symbol]
+    end_date = datetime.now()
+    transition_date = datetime(2025, 4, 5)  # Fecha de transición
+
+    logger.info(f"Procesando símbolos: {symbols_to_fetch}, período: {period}")
+    result = []
+
+    for sym in symbols_to_fetch:
+        try:
+            # Cargar datos con manejo seguro de DataFrames
+            current_df = load_dataframe(sym)
+            current_df = pd.DataFrame() if current_df is None or current_df.empty else current_df
+
+            hist_df = load_historical_data(sym)
+            hist_df = pd.DataFrame() if hist_df is None or hist_df.empty else hist_df
+
+            # Filtrar y combinar datasets
+            hist_df = hist_df[hist_df['timestamp'] < transition_date] if not hist_df.empty else hist_df
+            current_df = current_df[current_df['timestamp'] >= transition_date] if not current_df.empty else current_df
+
+            # Combinar ambos datasets
+            combined_df = pd.concat([hist_df, current_df], ignore_index=True)
+
+            if combined_df.empty:
+                logger.warning(f"No hay datos combinados para {sym}")
+                continue
+
+            # Filtrar por período
+            start_date = end_date - periods_map[period]
+            filtered_df = combined_df[
+                (combined_df['timestamp'] >= start_date) &
+                (combined_df['timestamp'] <= end_date)
+                ].copy()  # Usar copy() para evitar SettingWithCopyWarning
+
+            # Filtro adicional para tiempo real
+            if period == "realtime":
+                market_open = end_date.replace(hour=8, minute=0, second=0, microsecond=0)
+                market_close = end_date.replace(hour=16, minute=0, second=0, microsecond=0)
+                filtered_df = filtered_df[
+                    (filtered_df['timestamp'] >= market_open) &
+                    (filtered_df['timestamp'] <= market_close)
+                    ]
+
+            if filtered_df.empty:
+                logger.warning(f"No hay datos para {sym} en el período {period}")
+                continue
+
+            # Procesamiento de datos numéricos
+            numeric_cols = ['currentPrice', 'open', 'dayLow', 'dayHigh', 'volumen', 'previousClose']
+            for col in numeric_cols:
+                if col in filtered_df.columns:
+                    filtered_df[col] = pd.to_numeric(filtered_df[col], errors='coerce')
+
+            # Calcular variaciones
+            if period == "realtime":
+                # Variación punto a punto para tiempo real
+                filtered_df['variation_pct'] = filtered_df['currentPrice'].pct_change() * 100
+            else:
+                # Variación respecto al primer punto para otros períodos
+                first_valid_price = filtered_df['currentPrice'].first_valid_index()
+                if first_valid_price is not None:
+                    first_price = filtered_df.loc[first_valid_price, 'currentPrice']
+                    filtered_df['variation_pct'] = ((filtered_df['currentPrice'] - first_price) / first_price) * 100
+                else:
+                    filtered_df['variation_pct'] = 0.0
+
+            # Rellenar NaN con 0 y manejar infinitos
+            filtered_df['variation_pct'] = filtered_df['variation_pct'].replace([np.inf, -np.inf], np.nan).fillna(0)
+
+            # Obtener metadatos
+            last_current_data = get_latest_data(sym) or {}
+
+            # Construir respuesta
+            series_data = []
+            for _, row in filtered_df.iterrows():
+                point = TimeSeriesPoint(
+                    timestamp=row['timestamp'].isoformat(),
+                    price=float(row['variation_pct']),
+                    volume=float(row['volumen']) if pd.notna(row.get('volumen')) else None,
+                    open=float(row['open']) if pd.notna(row.get('open')) else None,
+                    day_low=float(row['dayLow']) if pd.notna(row.get('dayLow')) else None,
+                    day_high=float(row['dayHigh']) if pd.notna(row.get('dayHigh')) else None,
+                    previous_close=float(row['previousClose']) if pd.notna(row.get('previousClose')) else None
+                )
+                series_data.append(point)
+
+            # Calcular métricas adicionales
+            original_price = ORIGINAL_PRICES.get(sym)
+            last_price = filtered_df['currentPrice'].iloc[
+                -1] if not filtered_df.empty and 'currentPrice' in filtered_df.columns else None
+            last_variation = filtered_df['variation_pct'].iloc[-1] if not filtered_df.empty else 0.0
+
+            # Calcular volatilidad (desviación estándar de las variaciones)
+            volatility = filtered_df['variation_pct'].std() if len(filtered_df) > 1 else 0
+
+            symbol_series = SymbolTimeSeries(
+                symbol=sym,
+                data=series_data,
+                period=period,
+                original_price=original_price,
+                current_price=last_price,
+                current_profitability=(
+                    ((last_price - original_price) / original_price) * 100
+                    if last_price and original_price and original_price > 0
+                    else None
+                ),
+                market_cap=(
+                    float(last_current_data.get('marketCap'))
+                    if last_current_data and pd.notna(last_current_data.get('marketCap'))
+                    else None
+                ),
+                trailing_pe=(
+                    float(last_current_data.get('trailingPE'))
+                    if last_current_data and pd.notna(last_current_data.get('trailingPE'))
+                    else None
+                ),
+                dividend_yield=(
+                    float(last_current_data.get('dividendYield'))
+                    if last_current_data and pd.notna(last_current_data.get('dividendYield'))
+                    else None
+                ),
+                fifty_two_week_range=last_current_data.get('fiftyTwoWeekRange'),
+                daily_variation=float(last_variation),
+                volatility=float(volatility)
+            )
+            result.append(symbol_series)
+
+        except Exception as e:
+            logger.error(f"Error procesando {sym}: {str(e)}", exc_info=True)
+            continue
+
+    return TimeSeriesResponse(series=result)
+
 @app.get("/portfolio/holdings/live", response_model=PortfolioHoldings)
 def get_portfolio_holdings_live():
     """
@@ -1163,6 +1314,14 @@ async def serve_timeseries_html():
 async def get_timeseries_profitability_html():
     """Sirve la interfaz de análisis completo"""
     return FileResponse(os.path.join(static_dir, "timeseries-profitability.html"))
+
+
+@app.get("/html/market/variations", response_class=HTMLResponse)
+async def get_market_variations_html():
+    """
+    Sirve la página HTML para mostrar las variaciones de precio de los símbolos.
+    """
+    return FileResponse(os.path.join(static_dir, "market_variations.html"))
 
 
 # HTML Endpoint para visualizar los datos del portfolio

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Monitor de Variación Diaria</title>
+    <title>Monitor de Variación de Acciones</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/moment"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment"></script>
@@ -223,7 +223,7 @@
             transform: translateX(20px);
         }
 
-        /* Componente para el resumen de múltiples acciones */
+        /* Nuevo componente para el resumen de múltiples acciones */
         .stocks-summary {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -253,7 +253,7 @@
             font-weight: 700;
             color: #202124;
         }
-        .stock-variation {
+        .stock-price {
             font-size: 20px;
             font-weight: 600;
         }
@@ -303,6 +303,7 @@
             <div class="control-group">
                 <label>Período:</label>
                 <select id="period">
+                    <option value="realtime">Tiempo Real</option>
                     <option value="1d">1 Día</option>
                     <option value="1w" selected>1 Semana</option>
                     <option value="1m">1 Mes</option>
@@ -347,8 +348,8 @@
         <div class="chart-container">
             <!-- Overlay para mostrar la variación sobre el gráfico -->
             <div class="variation-overlay">
-                <span class="current-variation-display">+1.25%</span>
-                <span class="variation-change positive-change">↑ $1.25 (vs. ayer)</span>
+                <span class="current-variation-display">+5,18%</span>
+                <span class="variation-change positive-change">↑ 9,41% (6 meses)</span>
             </div>
             <canvas id="variationChart"></canvas>
         </div>
@@ -356,16 +357,16 @@
         <!-- Indicadores de mercado para una acción seleccionada -->
         <div class="market-indicators" id="singleStockIndicators">
             <div class="indicator-card">
-                <div class="indicator-label">VARIACIÓN PROMEDIO</div>
-                <div class="indicator-value">+0.45%</div>
+                <div class="indicator-label">CIERRE ANTERIOR</div>
+                <div class="indicator-value">193,60 $</div>
             </div>
             <div class="indicator-card">
-                <div class="indicator-label">MÁXIMA VARIACIÓN</div>
-                <div class="indicator-value">+2.15%</div>
+                <div class="indicator-label">CAP. BURSÁTIL</div>
+                <div class="indicator-value">15,14 mil M USD</div>
             </div>
             <div class="indicator-card">
-                <div class="indicator-label">MÍNIMA VARIACIÓN</div>
-                <div class="indicator-value">-0.75%</div>
+                <div class="indicator-label">RELACIÓN P/E</div>
+                <div class="indicator-value">10,15</div>
             </div>
             <div class="indicator-card">
                 <div class="indicator-label">VOLUMEN</div>
@@ -375,16 +376,16 @@
 
         <div class="market-indicators" id="singleStockIndicators2">
             <div class="indicator-card">
-                <div class="indicator-label">PRECIO ACTUAL</div>
-                <div class="indicator-value">191,08 $</div>
+                <div class="indicator-label">INTERVALO DIARIO</div>
+                <div class="indicator-value">187,29 $ - 192,05 $</div>
             </div>
             <div class="indicator-card">
-                <div class="indicator-label">CIERRE ANTERIOR</div>
-                <div class="indicator-value">193,60 $</div>
+                <div class="indicator-label">VOLUMEN MEDIO</div>
+                <div class="indicator-value">308,72 mil</div>
             </div>
             <div class="indicator-card">
-                <div class="indicator-label">RENTABILIDAD TOTAL</div>
-                <div class="indicator-value">+5,18%</div>
+                <div class="indicator-label">RENTABILIDAD DIV.</div>
+                <div class="indicator-value">4,86 %</div>
             </div>
             <div class="indicator-card">
                 <div class="indicator-label">BOLSA PRINCIPAL</div>
@@ -392,7 +393,7 @@
             </div>
         </div>
 
-        <!-- Componente para mostrar resumen de múltiples acciones -->
+        <!-- Nuevo componente para mostrar resumen de múltiples acciones -->
         <div class="stocks-summary" id="multipleStocksSummary" style="display: none;">
             <!-- Las tarjetas de resumen se generarán dinámicamente aquí -->
         </div>
@@ -408,7 +409,7 @@
             'ILF': '#dc3545'
         };
 
-        // Formatear números grandes
+        // Formatear números grandes (modificado para volúmenes sin $)
         function formatNumber(num, isVolume = false) {
             if (!num) return 'N/A';
             const prefix = isVolume ? '' : '$';
@@ -416,7 +417,7 @@
                 return prefix + (num / 1000000000).toFixed(2) + 'B';
             }
             if (num >= 1000000) {
-                return prefix + (num / 1000000).toFixed(2) + 'M';
+                return prefix + (num / 1000000000).toFixed(2) + 'M';
             }
             if (num >= 1000) {
                 return prefix + (num / 1000).toFixed(2) + 'K';
@@ -431,6 +432,31 @@
             if (document.getElementById('symbol-BRK-B').checked) symbols.push('BRK-B');
             if (document.getElementById('symbol-ILF').checked) symbols.push('ILF');
             return symbols;
+        }
+
+        // Obtener el cierre anterior confiable
+        function getPreviousClose(series) {
+            if (!series || !series.data || series.data.length === 0) return null;
+
+            // Intentar obtener el cierre anterior directamente del último punto de datos
+            const lastPoint = series.data[series.data.length - 1];
+            if (lastPoint && lastPoint.previous_close) {
+                return lastPoint.previous_close;
+            }
+
+            // Si no está disponible, intentar obtener del primer punto (que podría contener el cierre anterior)
+            const firstPoint = series.data[0];
+            if (firstPoint && firstPoint.previous_close) {
+                return firstPoint.previous_close;
+            }
+
+            // Como última alternativa, si hay más de un punto, usar el precio del penúltimo punto
+            if (series.data.length > 1) {
+                return series.data[series.data.length - 2].price;
+            }
+
+            //
+            return 193.60;
         }
 
         // Función principal para actualizar los gráficos
@@ -456,7 +482,7 @@
             document.getElementById('errorMessage').style.display = 'none';
 
             try {
-                const response = await axios.get('/api/timeseries-with-variation', {
+                const response = await axios.get('/api/timeseries-variations', {
                     params: {
                         symbol: selectedSymbols[0],
                         period: period,
@@ -505,7 +531,7 @@
             }
         }
 
-        // Función para actualizar el overlay de variación
+        // Función para actualizar el overlay de la variación
         function updateVariationOverlay(series) {
             if (!series || !series.data || series.data.length === 0) return;
 
@@ -514,16 +540,16 @@
             const changeElement = document.querySelector('.variation-change');
 
             if (variationElement && lastDataPoint) {
-                const isPositive = lastDataPoint.variation >= 0;
-                variationElement.textContent = `${isPositive ? '+' : ''}${lastDataPoint.variation_percent.toFixed(2)}%`;
-                variationElement.style.color = isPositive ? '#34a853' : '#ea4335';
+                variationElement.textContent = (lastDataPoint.price >= 0 ? '+' : '') + lastDataPoint.price.toFixed(2) + '%';
+                variationElement.style.color = lastDataPoint.price >= 0 ? '#34a853' : '#ea4335';
             }
 
-            if (changeElement && lastDataPoint) {
-                const isPositive = lastDataPoint.variation >= 0;
+            if (changeElement && series.current_profitability !== undefined) {
+                const isPositive = series.current_profitability >= 0;
                 changeElement.className = `variation-change ${isPositive ? 'positive-change' : 'negative-change'}`;
                 const sign = isPositive ? '↑' : '↓';
-                changeElement.textContent = `${sign} $${Math.abs(lastDataPoint.variation).toFixed(2)} (vs. anterior)`;
+                const periodText = getPeriodText(document.getElementById('period').value);
+                changeElement.textContent = `${sign} ${Math.abs(series.current_profitability).toFixed(2)}% ${isPositive ? '+' : ''}${periodText}`;
             }
         }
 
@@ -533,45 +559,63 @@
 
             const lastDataPoint = series.data[series.data.length - 1];
 
-            // Calcular estadísticas de variación
-            const variations = series.data.map(d => d.variation_percent).filter(v => v !== undefined);
-            const avgVariation = variations.length > 0 ?
-                (variations.reduce((a, b) => a + b, 0) / variations.length) : 0;
-            const maxVariation = variations.length > 0 ? Math.max(...variations) : 0;
-            const minVariation = variations.length > 0 ? Math.min(...variations) : 0;
+            // Obtener cierre anterior de manera confiable
+            const prevClose = getPreviousClose(series);
 
-            // Actualizar indicadores de variación
+            // Actualizar el cierre anterior
             document.querySelector('#singleStockIndicators .indicator-card:nth-child(1) .indicator-value').textContent =
-                `${avgVariation >= 0 ? '+' : ''}${avgVariation.toFixed(2)}%`;
-            document.querySelector('#singleStockIndicators .indicator-card:nth-child(2) .indicator-value').textContent =
-                `${maxVariation >= 0 ? '+' : ''}${maxVariation.toFixed(2)}%`;
-            document.querySelector('#singleStockIndicators .indicator-card:nth-child(3) .indicator-value').textContent =
-                `${minVariation >= 0 ? '+' : ''}${minVariation.toFixed(2)}%`;
+                prevClose ? `${prevClose.toFixed(2)} $` : 'N/A';
+
+            // Capitalización de mercado
+            const marketCap = series.market_cap ? formatNumber(series.market_cap) : 'N/A';
+
+            // P/E Ratio
+            const peRatio = series.trailing_pe ? series.trailing_pe.toFixed(2) : 'N/A';
 
             // Volumen actual
             const volume = lastDataPoint.volume ? formatNumber(lastDataPoint.volume, true) : 'N/A';
+
+            document.querySelector('#singleStockIndicators .indicator-card:nth-child(2) .indicator-value').textContent = marketCap;
+            document.querySelector('#singleStockIndicators .indicator-card:nth-child(3) .indicator-value').textContent = peRatio;
             document.querySelector('#singleStockIndicators .indicator-card:nth-child(4) .indicator-value').textContent = volume;
 
             // Segunda fila de indicadores
-            // Precio actual
+            // Encontrar mínimo y máximo en los datos disponibles
+            const dayLows = series.data.map(d => d.day_low).filter(Boolean);
+            const dayHighs = series.data.map(d => d.day_high).filter(Boolean);
+
+            const min = dayLows.length > 0 ? Math.min(...dayLows) : (lastDataPoint.price * 0.98).toFixed(2);
+            const max = dayHighs.length > 0 ? Math.max(...dayHighs) : (lastDataPoint.price * 1.02).toFixed(2);
+
             document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(1) .indicator-value').textContent =
-                lastDataPoint.current_price ? `${lastDataPoint.current_price.toFixed(2)} $` : 'N/A';
+                `${typeof min === 'number' ? min.toFixed(2) : min} $ - ${typeof max === 'number' ? max.toFixed(2) : max} $`;
 
-            // Cierre anterior (calculado como precio actual - variación)
-            const previousClose = lastDataPoint.current_price - lastDataPoint.variation;
-            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(2) .indicator-value').textContent =
-                `${previousClose.toFixed(2)} $`;
+            // Calcular volumen promedio
+            const volumes = series.data.map(p => {
+                return p.volume || p.volumen || p.VOLUME || (p.volume === 0 ? 0 : null);
+            }).filter(v => v !== null && v !== undefined && !isNaN(v));
 
-            // Rentabilidad total
-            const overallProfit = series.overall_profitability || 0;
-            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(3) .indicator-value').textContent =
-                `${overallProfit >= 0 ? '+' : ''}${overallProfit.toFixed(2)}%`;
+            const avgVolume = volumes.length > 0
+                ? formatNumber(volumes.reduce((a, b) => a + b, 0) / volumes.length, true)
+                : 'N/A';
+
+            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(2) .indicator-value').textContent = avgVolume;
+
+            // Dividend Yield
+            let dividendYield = series.dividend_yield ? series.dividend_yield : 0;
+            if (dividendYield > 100) {
+                dividendYield = (dividendYield / 100).toFixed(2) + '%';
+            } else {
+                dividendYield = dividendYield.toFixed(2) + '%';
+            }
+            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(3) .indicator-value').textContent = dividendYield;
 
             // Bolsa principal (ejemplo)
-            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(4) .indicator-value').textContent = 'NYSE';
+            const exchange = 'NYSE';
+            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(4) .indicator-value').textContent = exchange;
         }
 
-        // Función para mostrar resumen de múltiples acciones
+        // Nueva función para mostrar resumen de múltiples acciones
         function updateMultipleStocksSummary(series) {
             const container = document.getElementById('multipleStocksSummary');
             container.innerHTML = ''; // Limpiar el contenedor
@@ -580,7 +624,10 @@
                 if (!stock.data || stock.data.length === 0) return;
 
                 const lastPoint = stock.data[stock.data.length - 1];
-                const isPositive = lastPoint.variation >= 0;
+                const isPositive = lastPoint.price >= 0;
+
+                // Obtener cierre anterior de manera confiable para cada acción
+                const previousClose = getPreviousClose(stock);
 
                 const stockCard = document.createElement('div');
                 stockCard.className = 'stock-card';
@@ -588,31 +635,31 @@
                 stockCard.innerHTML = `
                     <div class="stock-header">
                         <div class="stock-symbol">${stock.symbol}</div>
-                        <div class="stock-variation" style="color: ${isPositive ? '#34a853' : '#ea4335'}">
-                            ${isPositive ? '+' : ''}${lastPoint.variation_percent.toFixed(2)}%
+                        <div class="stock-price" style="color: ${isPositive ? '#34a853' : '#ea4335'}">
+                            ${(lastPoint.price >= 0 ? '+' : '') + lastPoint.price.toFixed(2)}%
                         </div>
                     </div>
                     <div style="padding: 10px 15px; background-color: ${isPositive ? 'rgba(52, 168, 83, 0.1)' : 'rgba(234, 67, 53, 0.1)'}">
                         <span class="stock-change-indicator" style="color: ${isPositive ? '#34a853' : '#ea4335'}">
-                            ${isPositive ? '↑' : '↓'} $${Math.abs(lastPoint.variation).toFixed(2)}
+                            ${isPositive ? '↑' : '↓'} ${Math.abs(stock.current_profitability).toFixed(2)}%
                         </span>
                     </div>
                     <div class="stock-metrics">
                         <div class="metric">
-                            <div class="metric-label">PRECIO ACTUAL</div>
-                            <div class="metric-value">${lastPoint.current_price ? lastPoint.current_price.toFixed(2) + ' $' : 'N/A'}</div>
+                            <div class="metric-label">APERTURA</div>
+                            <div class="metric-value">${lastPoint.open ? lastPoint.open.toFixed(2) + ' $' : 'N/A'}</div>
                         </div>
                         <div class="metric">
                             <div class="metric-label">CIERRE ANT.</div>
-                            <div class="metric-value">${(lastPoint.current_price - lastPoint.variation).toFixed(2)} $</div>
+                            <div class="metric-value">${previousClose ? previousClose.toFixed(2) + ' $' : 'N/A'}</div>
                         </div>
                         <div class="metric">
-                            <div class="metric-label">VOLUMEN</div>
-                            <div class="metric-value">${lastPoint.volume ? formatNumber(lastPoint.volume, true) : 'N/A'}</div>
+                            <div class="metric-label">MÍN. DIARIO</div>
+                            <div class="metric-value">${lastPoint.day_low ? lastPoint.day_low.toFixed(2) + ' $' : 'N/A'}</div>
                         </div>
                         <div class="metric">
-                            <div class="metric-label">RENTAB. TOTAL</div>
-                            <div class="metric-value">${stock.overall_profitability !== undefined ? (stock.overall_profitability >= 0 ? '+' : '') + stock.overall_profitability.toFixed(2) + '%' : 'N/A'}</div>
+                            <div class="metric-label">MÁX. DIARIO</div>
+                            <div class="metric-value">${lastPoint.day_high ? lastPoint.day_high.toFixed(2) + ' $' : 'N/A'}</div>
                         </div>
                     </div>
                 `;
@@ -621,34 +668,116 @@
             });
         }
 
-        // Renderizar gráfico de variación
+        // Función para renderizar el gráfico de variación
         function renderVariationChart(series) {
             const ctx = document.getElementById('variationChart').getContext('2d');
             if (variationChart) variationChart.destroy();
 
             const period = document.getElementById('period').value;
             const isDailyView = period === '1w' || period === '1m' || period === '3m';
+            const isOneDayView = period === '1d';
+            const isRealTimeView = period === 'realtime';
 
             variationChart = new Chart(ctx, {
                 type: 'line',
                 data: {
-                    datasets: series.map(item => ({
-                        label: item.symbol,
-                        data: isDailyView ?
-                            // Para vista diaria: tomamos solo un punto por día (el último de cada día)
-                            getDailyPoints(item.data) :
-                            // Para vista intradía: mostramos todos los puntos
-                            item.data.map(point => ({
-                                x: point.timestamp,
-                                y: point.variation_percent
-                            })),
-                        borderColor: colors[item.symbol],
-                        backgroundColor: colors[item.symbol] + '20',
-                        tension: 0.1,
-                        borderWidth: 2,
-                        pointRadius: isDailyView ? 3 : 0,
-                        fill: false
-                    }))
+                    datasets: series.map(item => {
+                        // Configuración para vista de 1 día
+                        if (isOneDayView) {
+                            // Obtener el último punto del día anterior
+                            const now = new Date();
+                            const yesterday = new Date(now);
+                            yesterday.setDate(yesterday.getDate() - 1);
+                            const yesterdayKey = `${yesterday.getFullYear()}-${yesterday.getMonth()}-${yesterday.getDate()}`;
+
+                            // Buscar el último punto del día anterior
+                            let yesterdayPoint = null;
+                            for (let i = item.data.length - 1; i >= 0; i--) {
+                                const pointDate = new Date(item.data[i].timestamp);
+                                const pointKey = `${pointDate.getFullYear()}-${pointDate.getMonth()}-${pointDate.getDate()}`;
+                                if (pointKey === yesterdayKey) {
+                                    yesterdayPoint = item.data[i];
+                                    break;
+                                }
+                            }
+
+                            // Si no hay punto del día anterior, usar el primer punto disponible
+                            if (!yesterdayPoint && item.data.length > 0) {
+                                yesterdayPoint = item.data[0];
+                            }
+
+                            // Obtener el último punto (punto actual)
+                            const currentPoint = item.data[item.data.length - 1];
+
+                            // Crear dataset con solo dos puntos: día anterior y actual
+                            const dataPoints = [
+                                yesterdayPoint ? {
+                                    x: yesterdayPoint.timestamp,
+                                    y: yesterdayPoint.price,
+                                    rawData: yesterdayPoint
+                                } : null,
+                                currentPoint ? {
+                                    x: currentPoint.timestamp,
+                                    y: currentPoint.price,
+                                    rawData: currentPoint
+                                } : null
+                            ].filter(point => point !== null);
+
+                            return {
+                                label: item.symbol,
+                                data: dataPoints,
+                                borderColor: colors[item.symbol],
+                                backgroundColor: colors[item.symbol] + '20',
+                                tension: 0.1,
+                                borderWidth: 2,
+                                pointRadius: 3,
+                                fill: false
+                            };
+                        }
+                        // Configuración para vista en tiempo real
+                        else if (isRealTimeView) {
+                            // Filtrar puntos solo para las horas de mercado (9 AM - 4 PM)
+                            const marketHoursData = item.data.filter(point => {
+                                const pointDate = new Date(point.timestamp);
+                                const hours = pointDate.getHours();
+                                return hours >= 9 && hours <= 16; // 9 AM to 4 PM
+                            });
+
+                            return {
+                                label: item.symbol,
+                                data: marketHoursData.map(point => ({
+                                    x: point.timestamp,
+                                    y: point.price,
+                                    rawData: point
+                                })),
+                                borderColor: colors[item.symbol],
+                                backgroundColor: colors[item.symbol] + '20',
+                                tension: 0.1,
+                                borderWidth: 2,
+                                pointRadius: 0,
+                                fill: false
+                            };
+                        }
+                        // Configuración para vistas diarias (semana, mes, 3 meses)
+                        else {
+                            return {
+                                label: item.symbol,
+                                data: isDailyView ?
+                                    getDailyPoints(item.data) :
+                                    item.data.map(point => ({
+                                        x: point.timestamp,
+                                        y: point.price,
+                                        rawData: point
+                                    })),
+                                borderColor: colors[item.symbol],
+                                backgroundColor: colors[item.symbol] + '20',
+                                tension: 0.1,
+                                borderWidth: 2,
+                                pointRadius: isDailyView ? 3 : 0,
+                                fill: false
+                            };
+                        }
+                    })
                 },
                 options: {
                     responsive: true,
@@ -661,9 +790,10 @@
                         x: {
                             type: 'time',
                             time: {
-                                tooltipFormat: isDailyView ? 'DD/MM/YYYY' : 'DD/MM/YYYY HH:mm',
+                                tooltipFormat: isRealTimeView ? 'DD/MM/YYYY HH:mm' :
+                                              (isDailyView ? 'DD/MM/YYYY' : 'DD/MM/YYYY HH:mm'),
                                 displayFormats: {
-                                    hour: isDailyView ? 'DD/MM' : 'HH:mm',
+                                    hour: (isDailyView || isOneDayView) ? 'DD/MM' : 'HH:mm',
                                     day: 'DD/MM',
                                     week: 'DD/MM',
                                     month: 'MMM'
@@ -678,14 +808,13 @@
                             }
                         },
                         y: {
-                            title: {
-                                display: true,
-                                text: 'Variación (%)'
-                            },
                             ticks: {
                                 callback: function(value) {
                                     return value + '%';
                                 }
+                            },
+                            title: {
+                                display: false
                             },
                             grid: {
                                 color: '#f1f1f1'
@@ -705,16 +834,19 @@
                                 label: function(context) {
                                     const dataset = context.dataset;
                                     const dataPoint = dataset.data[context.dataIndex];
-                                    const rawData = isDailyView ?
-                                        context.dataset.rawData[context.dataIndex] :
-                                        series.find(s => s.symbol === dataset.label).data[context.dataIndex];
+                                    const rawData = isRealTimeView ?
+                                        dataPoint.rawData :
+                                        (isDailyView ?
+                                            context.dataset.rawData[context.dataIndex] :
+                                            series.find(s => s.symbol === dataset.label).data[context.dataIndex]);
 
                                     return [
-                                        `${dataset.label}: ${dataPoint.y >= 0 ? '+' : ''}${dataPoint.y.toFixed(2)}%`,
-                                        `Variación: $${rawData.variation.toFixed(2)}`,
-                                        `Precio: $${rawData.current_price.toFixed(2)}`,
-                                        `Vol: ${formatNumber(rawData.volume, true)}`
-                                    ];
+                                        `${dataset.label}: ${(dataPoint.y >= 0 ? '+' : '') + dataPoint.y.toFixed(2)}%`,
+                                        rawData.open ? `Apertura: $${rawData.open.toFixed(2)}` : null,
+                                        rawData.day_low ? `Mín: $${rawData.day_low.toFixed(2)}` : null,
+                                        rawData.day_high ? `Máx: $${rawData.day_high.toFixed(2)}` : null,
+                                        rawData.volume ? `Vol: ${formatNumber(rawData.volume, true)}` : null
+                                    ].filter(line => line !== null);
                                 }
                             }
                         }
@@ -743,7 +875,7 @@
             daysMap.forEach(point => {
                 dailyPoints.push({
                     x: point.timestamp,
-                    y: point.variation_percent,
+                    y: point.price,
                     rawData: point // Guardamos los datos originales para el tooltip
                 });
             });
@@ -756,8 +888,10 @@
             clearInterval(autoUpdateInterval);
 
             if (document.getElementById('autoUpdateToggle').checked) {
-                autoUpdateInterval = setInterval(updateCharts, 60000); // 60 segundos
-                console.log('Auto-actualización activada');
+                const period = document.getElementById('period').value;
+                const updateInterval = period === 'realtime' ? 10000 : 60000; // 10 segundos en tiempo real, 60 segundos en otros modos
+                autoUpdateInterval = setInterval(updateCharts, updateInterval);
+                console.log(`Auto-actualización activada (${updateInterval/1000}s)`);
             }
         }
 
@@ -777,6 +911,18 @@
             document.getElementById('singleStockIndicators').style.display = 'none';
             document.getElementById('singleStockIndicators2').style.display = 'none';
             document.getElementById('multipleStocksSummary').style.display = 'none';
+        }
+
+        // Función auxiliar para obtener el texto del período
+        function getPeriodText(period) {
+            const periods = {
+                'realtime': 'tiempo real',
+                '1d': '1 día',
+                '1w': '1 semana',
+                '1m': '1 mes',
+                '3m': '3 meses'
+            };
+            return periods[period] || period;
         }
 
         // Event Listeners
