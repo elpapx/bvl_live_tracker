@@ -303,6 +303,7 @@
             <div class="control-group">
                 <label>Período:</label>
                 <select id="period">
+                    <option value="realtime">Tiempo Real</option>
                     <option value="1d">1 Día</option>
                     <option value="1w" selected>1 Semana</option>
                     <option value="1m">1 Mes</option>
@@ -669,8 +670,10 @@
             clearInterval(autoUpdateInterval);
 
             if (document.getElementById('autoUpdateToggle').checked) {
-                autoUpdateInterval = setInterval(updateCharts, 60000); // 60 segundos
-                console.log('Auto-actualización activada');
+                const period = document.getElementById('period').value;
+                const updateInterval = period === 'realtime' ? 10000 : 60000; // 10 segundos en tiempo real, 60 segundos en otros modos
+                autoUpdateInterval = setInterval(updateCharts, updateInterval);
+                console.log(`Auto-actualización activada (${updateInterval/1000}s)`);
             }
         }
 
@@ -695,6 +698,7 @@
         // Función auxiliar para obtener el texto del período
         function getPeriodText(period) {
             const periods = {
+                'realtime': 'tiempo real',
                 '1d': '1 día',
                 '1w': '1 semana',
                 '1m': '1 mes',
@@ -702,35 +706,115 @@
             };
             return periods[period] || period;
         }
-
-                // Renderizar gráfico de precios
         function renderPriceChart(series) {
             const ctx = document.getElementById('priceChart').getContext('2d');
             if (priceChart) priceChart.destroy();
 
             const period = document.getElementById('period').value;
             const isDailyView = period === '1w' || period === '1m' || period === '3m';
+            const isOneDayView = period === '1d';
+            const isRealTimeView = period === 'realtime';
 
             priceChart = new Chart(ctx, {
                 type: 'line',
                 data: {
-                    datasets: series.map(item => ({
-                        label: item.symbol,
-                        data: isDailyView ?
-                            // Para vista diaria: tomamos solo un punto por día (el último de cada día)
-                            getDailyPoints(item.data) :
-                            // Para vista intradía: mostramos todos los puntos
-                            item.data.map(point => ({
-                                x: point.timestamp,
-                                y: point.price
-                            })),
-                        borderColor: colors[item.symbol],
-                        backgroundColor: colors[item.symbol] + '20',
-                        tension: 0.1,
-                        borderWidth: 2,
-                        pointRadius: isDailyView ? 3 : 0, // Mostrar puntos en vista diaria
-                        fill: false
-                    }))
+                    datasets: series.map(item => {
+                        // Configuración para vista de 1 día
+                        if (isOneDayView) {
+                            // Obtener el último precio del día anterior
+                            const now = new Date();
+                            const yesterday = new Date(now);
+                            yesterday.setDate(yesterday.getDate() - 1);
+                            const yesterdayKey = `${yesterday.getFullYear()}-${yesterday.getMonth()}-${yesterday.getDate()}`;
+
+                            // Buscar el último punto del día anterior
+                            let yesterdayPoint = null;
+                            for (let i = item.data.length - 1; i >= 0; i--) {
+                                const pointDate = new Date(item.data[i].timestamp);
+                                const pointKey = `${pointDate.getFullYear()}-${pointDate.getMonth()}-${pointDate.getDate()}`;
+                                if (pointKey === yesterdayKey) {
+                                    yesterdayPoint = item.data[i];
+                                    break;
+                                }
+                            }
+
+                            // Si no hay punto del día anterior, usar el primer punto disponible
+                            if (!yesterdayPoint && item.data.length > 0) {
+                                yesterdayPoint = item.data[0];
+                            }
+
+                            // Obtener el último precio (precio actual)
+                            const currentPoint = item.data[item.data.length - 1];
+
+                            // Crear dataset con solo dos puntos: día anterior y actual
+                            const dataPoints = [
+                                yesterdayPoint ? {
+                                    x: yesterdayPoint.timestamp,
+                                    y: yesterdayPoint.price,
+                                    rawData: yesterdayPoint
+                                } : null,
+                                currentPoint ? {
+                                    x: currentPoint.timestamp,
+                                    y: currentPoint.price,
+                                    rawData: currentPoint
+                                } : null
+                            ].filter(point => point !== null);
+
+                            return {
+                                label: item.symbol,
+                                data: dataPoints,
+                                borderColor: colors[item.symbol],
+                                backgroundColor: colors[item.symbol] + '20',
+                                tension: 0.1,
+                                borderWidth: 2,
+                                pointRadius: 3,
+                                fill: false
+                            };
+                        }
+                        // Configuración para vista en tiempo real
+                        else if (isRealTimeView) {
+                            // Filtrar puntos solo para las horas de mercado (9 AM - 4 PM)
+                            const marketHoursData = item.data.filter(point => {
+                                const pointDate = new Date(point.timestamp);
+                                const hours = pointDate.getHours();
+                                return hours >= 9 && hours <= 16; // 9 AM to 4 PM
+                            });
+
+                            return {
+                                label: item.symbol,
+                                data: marketHoursData.map(point => ({
+                                    x: point.timestamp,
+                                    y: point.price,
+                                    rawData: point
+                                })),
+                                borderColor: colors[item.symbol],
+                                backgroundColor: colors[item.symbol] + '20',
+                                tension: 0.1,
+                                borderWidth: 2,
+                                pointRadius: 0,
+                                fill: false
+                            };
+                        }
+                        // Configuración para vistas diarias (semana, mes, 3 meses)
+                        else {
+                            return {
+                                label: item.symbol,
+                                data: isDailyView ?
+                                    getDailyPoints(item.data) :
+                                    item.data.map(point => ({
+                                        x: point.timestamp,
+                                        y: point.price,
+                                        rawData: point
+                                    })),
+                                borderColor: colors[item.symbol],
+                                backgroundColor: colors[item.symbol] + '20',
+                                tension: 0.1,
+                                borderWidth: 2,
+                                pointRadius: isDailyView ? 3 : 0,
+                                fill: false
+                            };
+                        }
+                    })
                 },
                 options: {
                     responsive: true,
@@ -743,14 +827,15 @@
                         x: {
                             type: 'time',
                             time: {
-                                tooltipFormat: isDailyView ? 'DD/MM/YYYY' : 'DD/MM/YYYY HH:mm',
+                                tooltipFormat: isRealTimeView ? 'DD/MM/YYYY HH:mm' :
+                                              (isDailyView ? 'DD/MM/YYYY' : 'DD/MM/YYYY HH:mm'),
                                 displayFormats: {
-                                    hour: isDailyView ? 'DD/MM' : 'HH:mm',
+                                    hour: (isDailyView || isOneDayView) ? 'DD/MM' : 'HH:mm',
                                     day: 'DD/MM',
                                     week: 'DD/MM',
                                     month: 'MMM'
                                 },
-                                unit: isDailyView ? 'day' : undefined // Forzar unidad día en vista diaria
+                                unit: isDailyView ? 'day' : undefined
                             },
                             grid: {
                                 display: false
@@ -781,9 +866,11 @@
                                 label: function(context) {
                                     const dataset = context.dataset;
                                     const dataPoint = dataset.data[context.dataIndex];
-                                    const rawData = isDailyView ?
-                                        context.dataset.rawData[context.dataIndex] :
-                                        series.find(s => s.symbol === dataset.label).data[context.dataIndex];
+                                    const rawData = isRealTimeView ?
+                                        dataPoint.rawData :
+                                        (isDailyView ?
+                                            context.dataset.rawData[context.dataIndex] :
+                                            series.find(s => s.symbol === dataset.label).data[context.dataIndex]);
 
                                     return [
                                         `${dataset.label}: $${dataPoint.y.toFixed(2)}`,
@@ -799,6 +886,7 @@
                 }
             });
         }
+
 
         // Función auxiliar para obtener un punto por día (el último de cada día)
         function getDailyPoints(data) {

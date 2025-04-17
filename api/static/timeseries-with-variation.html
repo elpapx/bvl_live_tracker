@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Monitor de Variación de Acciones</title>
+    <title>Monitor de Variación Diaria</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/moment"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment"></script>
@@ -69,6 +69,7 @@
         .current-variation-display {
             font-size: 24px;
             font-weight: 700;
+            color: #202124;
         }
         .variation-change {
             font-size: 14px;
@@ -133,8 +134,15 @@
             grid-column: 1 / -1;
             color: #6c757d;
         }
+        h3 {
+            margin-top: 0;
+            margin-bottom: 15px;
+            font-size: 20px;
+            color: #343a40;
+            font-weight: 600;
+        }
 
-        /* Indicadores de mercado */
+        /* Estilos para los indicadores de mercado */
         .market-indicators {
             display: flex;
             flex-wrap: wrap;
@@ -149,19 +157,73 @@
             padding: 10px 15px;
             flex: 1;
             min-width: 150px;
+            transition: all 0.2s ease;
+        }
+        .indicator-card:hover {
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
         }
         .indicator-label {
             font-size: 12px;
             color: #70757a;
             margin-bottom: 5px;
+            font-weight: normal;
             text-transform: uppercase;
         }
         .indicator-value {
             font-size: 14px;
             font-weight: 600;
+            color: #202124;
         }
 
-        /* Resumen de acciones */
+        /* Auto-update toggle */
+        .auto-update-toggle {
+            margin-left: auto;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 14px;
+        }
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 40px;
+            height: 20px;
+        }
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .4s;
+            border-radius: 20px;
+        }
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 16px;
+            width: 16px;
+            left: 2px;
+            bottom: 2px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+        input:checked + .slider {
+            background-color: #1a73e8;
+        }
+        input:checked + .slider:before {
+            transform: translateX(20px);
+        }
+
+        /* Componente para el resumen de múltiples acciones */
         .stocks-summary {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -171,17 +233,25 @@
         .stock-card {
             background: white;
             border-radius: 10px;
+            overflow: hidden;
             box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+            transition: transform 0.2s, box-shadow 0.3s;
+        }
+        .stock-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
         }
         .stock-header {
             padding: 15px;
             border-bottom: 1px solid #f0f0f0;
             display: flex;
             justify-content: space-between;
+            align-items: center;
         }
         .stock-symbol {
             font-size: 18px;
             font-weight: 700;
+            color: #202124;
         }
         .stock-variation {
             font-size: 20px;
@@ -193,6 +263,10 @@
             grid-template-columns: 1fr 1fr;
             gap: 12px;
         }
+        .metric {
+            display: flex;
+            flex-direction: column;
+        }
         .metric-label {
             font-size: 12px;
             color: #70757a;
@@ -200,8 +274,16 @@
         .metric-value {
             font-size: 14px;
             font-weight: 500;
+            color: #202124;
+        }
+        .stock-change-indicator {
+            font-size: 14px;
+            font-weight: 500;
+            padding: 3px 8px;
+            border-radius: 4px;
         }
 
+        /* Mejoras para responsividad */
         @media (max-width: 768px) {
             .market-indicators {
                 flex-direction: column;
@@ -263,54 +345,57 @@
         </div>
 
         <div class="chart-container">
+            <!-- Overlay para mostrar la variación sobre el gráfico -->
             <div class="variation-overlay">
-                <span class="current-variation-display positive-change">+5.18%</span>
-                <span class="variation-change positive-change">↑ +9.41% (6 meses)</span>
+                <span class="current-variation-display">+1.25%</span>
+                <span class="variation-change positive-change">↑ $1.25 (vs. ayer)</span>
             </div>
             <canvas id="variationChart"></canvas>
         </div>
 
-        <!-- Indicadores de mercado -->
+        <!-- Indicadores de mercado para una acción seleccionada -->
         <div class="market-indicators" id="singleStockIndicators">
             <div class="indicator-card">
-                <div class="indicator-label">VARIACIÓN 1D</div>
-                <div class="indicator-value positive-change">+2.15%</div>
+                <div class="indicator-label">VARIACIÓN PROMEDIO</div>
+                <div class="indicator-value">+0.45%</div>
             </div>
             <div class="indicator-card">
-                <div class="indicator-label">VARIACIÓN 1M</div>
-                <div class="indicator-value negative-change">-1.87%</div>
+                <div class="indicator-label">MÁXIMA VARIACIÓN</div>
+                <div class="indicator-value">+2.15%</div>
             </div>
             <div class="indicator-card">
-                <div class="indicator-label">VARIACIÓN 3M</div>
-                <div class="indicator-value positive-change">+5.42%</div>
+                <div class="indicator-label">MÍNIMA VARIACIÓN</div>
+                <div class="indicator-value">-0.75%</div>
             </div>
             <div class="indicator-card">
-                <div class="indicator-label">VOLATILIDAD</div>
-                <div class="indicator-value">1.85%</div>
+                <div class="indicator-label">VOLUMEN</div>
+                <div class="indicator-value">308,72 mil</div>
             </div>
         </div>
 
         <div class="market-indicators" id="singleStockIndicators2">
             <div class="indicator-card">
-                <div class="indicator-label">MEJOR DÍA</div>
-                <div class="indicator-value positive-change">+3.25% (15/04)</div>
+                <div class="indicator-label">PRECIO ACTUAL</div>
+                <div class="indicator-value">191,08 $</div>
             </div>
             <div class="indicator-card">
-                <div class="indicator-label">PEOR DÍA</div>
-                <div class="indicator-value negative-change">-2.10% (08/04)</div>
+                <div class="indicator-label">CIERRE ANTERIOR</div>
+                <div class="indicator-value">193,60 $</div>
             </div>
             <div class="indicator-card">
-                <div class="indicator-label">MEDIA 30D</div>
-                <div class="indicator-value">+0.45%</div>
+                <div class="indicator-label">RENTABILIDAD TOTAL</div>
+                <div class="indicator-value">+5,18%</div>
             </div>
             <div class="indicator-card">
-                <div class="indicator-label">RENT. ANUAL</div>
-                <div class="indicator-value positive-change">+18.25%</div>
+                <div class="indicator-label">BOLSA PRINCIPAL</div>
+                <div class="indicator-value">NYSE</div>
             </div>
         </div>
 
-        <!-- Resumen para múltiples acciones -->
-        <div class="stocks-summary" id="multipleStocksSummary" style="display: none;"></div>
+        <!-- Componente para mostrar resumen de múltiples acciones -->
+        <div class="stocks-summary" id="multipleStocksSummary" style="display: none;">
+            <!-- Las tarjetas de resumen se generarán dinámicamente aquí -->
+        </div>
     </div>
 
     <script>
@@ -323,6 +408,31 @@
             'ILF': '#dc3545'
         };
 
+        // Formatear números grandes
+        function formatNumber(num, isVolume = false) {
+            if (!num) return 'N/A';
+            const prefix = isVolume ? '' : '$';
+            if (num >= 1000000000) {
+                return prefix + (num / 1000000000).toFixed(2) + 'B';
+            }
+            if (num >= 1000000) {
+                return prefix + (num / 1000000).toFixed(2) + 'M';
+            }
+            if (num >= 1000) {
+                return prefix + (num / 1000).toFixed(2) + 'K';
+            }
+            return prefix + num.toFixed(2);
+        }
+
+        // Obtener símbolos seleccionados
+        function getSelectedSymbols() {
+            const symbols = [];
+            if (document.getElementById('symbol-BAP').checked) symbols.push('BAP');
+            if (document.getElementById('symbol-BRK-B').checked) symbols.push('BRK-B');
+            if (document.getElementById('symbol-ILF').checked) symbols.push('ILF');
+            return symbols;
+        }
+
         // Función principal para actualizar los gráficos
         async function updateCharts() {
             const period = document.getElementById('period').value;
@@ -333,9 +443,13 @@
                 return;
             }
 
-            // Mostrar/ocultar elementos según selección
+            // Mostrar/ocultar overlay según cantidad de acciones seleccionadas
             const variationOverlay = document.querySelector('.variation-overlay');
-            variationOverlay.classList.toggle('hidden', selectedSymbols.length > 1);
+            if (selectedSymbols.length > 1) {
+                variationOverlay.classList.add('hidden');
+            } else {
+                variationOverlay.classList.remove('hidden');
+            }
 
             // Mostrar carga
             document.getElementById('loading').style.display = 'block';
@@ -346,7 +460,7 @@
                     params: {
                         symbol: selectedSymbols[0],
                         period: period,
-                        compare_all: selectedSymbols.length > 1
+                        compare_all: true
                     }
                 });
 
@@ -354,20 +468,33 @@
                     throw new Error('No se recibieron datos válidos');
                 }
 
-                renderVariationChart(response.data.series);
+                // Filtrar series seleccionadas
+                const filteredSeries = response.data.series.filter(serie =>
+                    selectedSymbols.includes(serie.symbol) && serie.data?.length > 0);
 
+                if (filteredSeries.length == 0) {
+                    throw new Error('No hay datos para los simbolos seleccionados');
+                }
+
+                renderVariationChart(filteredSeries);
+
+                // Manejamos la vista según la cantidad de símbolos seleccionados
                 if (selectedSymbols.length === 1) {
-                    updateVariationOverlay(response.data.series[0]);
-                    updateSingleStockIndicators(response.data.series[0]);
+                    // Para un solo símbolo, mostramos indicadores detallados
+                    updateVariationOverlay(filteredSeries[0]);
+                    updateSingleStockIndicators(filteredSeries[0]);
                     document.getElementById('singleStockIndicators').style.display = 'flex';
                     document.getElementById('singleStockIndicators2').style.display = 'flex';
                     document.getElementById('multipleStocksSummary').style.display = 'none';
                 } else {
+                    // Para múltiples símbolos, mostramos resumen comparativo
                     document.getElementById('singleStockIndicators').style.display = 'none';
                     document.getElementById('singleStockIndicators2').style.display = 'none';
                     document.getElementById('multipleStocksSummary').style.display = 'grid';
-                    updateMultipleStocksSummary(response.data.series);
+                    updateMultipleStocksSummary(filteredSeries);
                 }
+
+                console.log(`Datos actualizados: ${new Date().toLocaleTimeString()}`);
 
             } catch (error) {
                 console.error('Error:', error);
@@ -382,65 +509,72 @@
         function updateVariationOverlay(series) {
             if (!series || !series.data || series.data.length === 0) return;
 
-            const lastVariation = series.data[series.data.length - 1].variation;
+            const lastDataPoint = series.data[series.data.length - 1];
             const variationElement = document.querySelector('.current-variation-display');
             const changeElement = document.querySelector('.variation-change');
 
-            if (variationElement) {
-                const isPositive = lastVariation >= 0;
-                variationElement.textContent = `${isPositive ? '+' : ''}${lastVariation.toFixed(2)}%`;
-                variationElement.className = `current-variation-display ${isPositive ? 'positive-change' : 'negative-change'}`;
+            if (variationElement && lastDataPoint) {
+                const isPositive = lastDataPoint.variation >= 0;
+                variationElement.textContent = `${isPositive ? '+' : ''}${lastDataPoint.variation_percent.toFixed(2)}%`;
+                variationElement.style.color = isPositive ? '#34a853' : '#ea4335';
             }
 
-            if (changeElement && series.stats) {
-                const isPositive = series.stats.current_variation >= 0;
+            if (changeElement && lastDataPoint) {
+                const isPositive = lastDataPoint.variation >= 0;
                 changeElement.className = `variation-change ${isPositive ? 'positive-change' : 'negative-change'}`;
                 const sign = isPositive ? '↑' : '↓';
-                changeElement.textContent = `${sign} ${Math.abs(series.stats.current_variation).toFixed(2)}% (${getPeriodText(document.getElementById('period').value})`;
+                changeElement.textContent = `${sign} $${Math.abs(lastDataPoint.variation).toFixed(2)} (vs. anterior)`;
             }
         }
 
         // Actualizar indicadores para un solo stock
         function updateSingleStockIndicators(series) {
-            if (!series || !series.stats) return;
+            if (!series || !series.data || series.data.length === 0) return;
 
-            const formatVariation = (value) => {
-                if (value === null || value === undefined) return 'N/A';
-                const isPositive = value >= 0;
-                return `<span class="${isPositive ? 'positive-change' : 'negative-change'}">${isPositive ? '+' : ''}${value.toFixed(2)}%</span>`;
-            };
+            const lastDataPoint = series.data[series.data.length - 1];
 
-            // Primera fila de indicadores
-            document.querySelector('#singleStockIndicators .indicator-card:nth-child(1) .indicator-value').innerHTML =
-                formatVariation(series.stats.day_variation);
+            // Calcular estadísticas de variación
+            const variations = series.data.map(d => d.variation_percent).filter(v => v !== undefined);
+            const avgVariation = variations.length > 0 ?
+                (variations.reduce((a, b) => a + b, 0) / variations.length) : 0;
+            const maxVariation = variations.length > 0 ? Math.max(...variations) : 0;
+            const minVariation = variations.length > 0 ? Math.min(...variations) : 0;
 
-            document.querySelector('#singleStockIndicators .indicator-card:nth-child(2) .indicator-value').innerHTML =
-                formatVariation(series.stats.month_variation);
+            // Actualizar indicadores de variación
+            document.querySelector('#singleStockIndicators .indicator-card:nth-child(1) .indicator-value').textContent =
+                `${avgVariation >= 0 ? '+' : ''}${avgVariation.toFixed(2)}%`;
+            document.querySelector('#singleStockIndicators .indicator-card:nth-child(2) .indicator-value').textContent =
+                `${maxVariation >= 0 ? '+' : ''}${maxVariation.toFixed(2)}%`;
+            document.querySelector('#singleStockIndicators .indicator-card:nth-child(3) .indicator-value').textContent =
+                `${minVariation >= 0 ? '+' : ''}${minVariation.toFixed(2)}%`;
 
-            document.querySelector('#singleStockIndicators .indicator-card:nth-child(3) .indicator-value').innerHTML =
-                formatVariation(series.stats.three_month_variation);
-
-            document.querySelector('#singleStockIndicators .indicator-card:nth-child(4) .indicator-value').textContent =
-                series.stats.volatility ? `${series.stats.volatility}%` : 'N/A';
+            // Volumen actual
+            const volume = lastDataPoint.volume ? formatNumber(lastDataPoint.volume, true) : 'N/A';
+            document.querySelector('#singleStockIndicators .indicator-card:nth-child(4) .indicator-value').textContent = volume;
 
             // Segunda fila de indicadores
-            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(1) .indicator-value').innerHTML =
-                formatVariation(series.stats.max_variation);
+            // Precio actual
+            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(1) .indicator-value').textContent =
+                lastDataPoint.current_price ? `${lastDataPoint.current_price.toFixed(2)} $` : 'N/A';
 
-            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(2) .indicator-value').innerHTML =
-                formatVariation(series.stats.min_variation);
+            // Cierre anterior (calculado como precio actual - variación)
+            const previousClose = lastDataPoint.current_price - lastDataPoint.variation;
+            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(2) .indicator-value').textContent =
+                `${previousClose.toFixed(2)} $`;
 
-            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(3) .indicator-value').innerHTML =
-                series.stats.avg_30_days ? formatVariation(series.stats.avg_30_days) : 'N/A';
+            // Rentabilidad total
+            const overallProfit = series.overall_profitability || 0;
+            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(3) .indicator-value').textContent =
+                `${overallProfit >= 0 ? '+' : ''}${overallProfit.toFixed(2)}%`;
 
-            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(4) .indicator-value').innerHTML =
-                formatVariation(series.stats.annualized_return);
+            // Bolsa principal (ejemplo)
+            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(4) .indicator-value').textContent = 'NYSE';
         }
 
-        // Actualizar resumen para múltiples acciones
+        // Función para mostrar resumen de múltiples acciones
         function updateMultipleStocksSummary(series) {
             const container = document.getElementById('multipleStocksSummary');
-            container.innerHTML = '';
+            container.innerHTML = ''; // Limpiar el contenedor
 
             series.forEach(stock => {
                 if (!stock.data || stock.data.length === 0) return;
@@ -454,28 +588,31 @@
                 stockCard.innerHTML = `
                     <div class="stock-header">
                         <div class="stock-symbol">${stock.symbol}</div>
-                        <div class="stock-variation ${isPositive ? 'positive-change' : 'negative-change'}">
-                            ${isPositive ? '+' : ''}${lastPoint.variation.toFixed(2)}%
+                        <div class="stock-variation" style="color: ${isPositive ? '#34a853' : '#ea4335'}">
+                            ${isPositive ? '+' : ''}${lastPoint.variation_percent.toFixed(2)}%
                         </div>
+                    </div>
+                    <div style="padding: 10px 15px; background-color: ${isPositive ? 'rgba(52, 168, 83, 0.1)' : 'rgba(234, 67, 53, 0.1)'}">
+                        <span class="stock-change-indicator" style="color: ${isPositive ? '#34a853' : '#ea4335'}">
+                            ${isPositive ? '↑' : '↓'} $${Math.abs(lastPoint.variation).toFixed(2)}
+                        </span>
                     </div>
                     <div class="stock-metrics">
                         <div class="metric">
                             <div class="metric-label">PRECIO ACTUAL</div>
-                            <div class="metric-value">$${lastPoint.price.toFixed(2)}</div>
+                            <div class="metric-value">${lastPoint.current_price ? lastPoint.current_price.toFixed(2) + ' $' : 'N/A'}</div>
                         </div>
                         <div class="metric">
-                            <div class="metric-label">VAR. 1D</div>
-                            <div class="metric-value ${stock.stats.day_variation >= 0 ? 'positive-change' : 'negative-change'}">
-                                ${stock.stats.day_variation >= 0 ? '+' : ''}${stock.stats.day_variation.toFixed(2)}%
-                            </div>
+                            <div class="metric-label">CIERRE ANT.</div>
+                            <div class="metric-value">${(lastPoint.current_price - lastPoint.variation).toFixed(2)} $</div>
                         </div>
                         <div class="metric">
                             <div class="metric-label">VOLUMEN</div>
-                            <div class="metric-value">${formatNumber(lastPoint.volume, true)}</div>
+                            <div class="metric-value">${lastPoint.volume ? formatNumber(lastPoint.volume, true) : 'N/A'}</div>
                         </div>
                         <div class="metric">
-                            <div class="metric-label">VOLATILIDAD</div>
-                            <div class="metric-value">${stock.stats.volatility}%</div>
+                            <div class="metric-label">RENTAB. TOTAL</div>
+                            <div class="metric-value">${stock.overall_profitability !== undefined ? (stock.overall_profitability >= 0 ? '+' : '') + stock.overall_profitability.toFixed(2) + '%' : 'N/A'}</div>
                         </div>
                     </div>
                 `;
@@ -490,7 +627,7 @@
             if (variationChart) variationChart.destroy();
 
             const period = document.getElementById('period').value;
-            const isDailyView = period !== '1d';
+            const isDailyView = period === '1w' || period === '1m' || period === '3m';
 
             variationChart = new Chart(ctx, {
                 type: 'line',
@@ -498,10 +635,12 @@
                     datasets: series.map(item => ({
                         label: item.symbol,
                         data: isDailyView ?
+                            // Para vista diaria: tomamos solo un punto por día (el último de cada día)
                             getDailyPoints(item.data) :
+                            // Para vista intradía: mostramos todos los puntos
                             item.data.map(point => ({
                                 x: point.timestamp,
-                                y: point.variation
+                                y: point.variation_percent
                             })),
                         borderColor: colors[item.symbol],
                         backgroundColor: colors[item.symbol] + '20',
@@ -533,34 +672,49 @@
                             },
                             grid: {
                                 display: false
+                            },
+                            title: {
+                                display: false
                             }
                         },
                         y: {
+                            title: {
+                                display: true,
+                                text: 'Variación (%)'
+                            },
                             ticks: {
                                 callback: function(value) {
                                     return value + '%';
                                 }
                             },
-                            title: {
-                                display: true,
-                                text: 'Variación porcentual'
+                            grid: {
+                                color: '#f1f1f1'
                             }
                         }
                     },
                     plugins: {
                         legend: {
-                            position: 'top'
+                            position: 'top',
+                            labels: {
+                                usePointStyle: true,
+                                padding: 20
+                            }
                         },
                         tooltip: {
                             callbacks: {
                                 label: function(context) {
-                                    const label = context.dataset.label || '';
-                                    const value = context.parsed.y;
-                                    return `${label}: ${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
-                                },
-                                afterLabel: function(context) {
-                                    const rawData = context.dataset.data[context.dataIndex].rawData;
-                                    return `Precio: $${rawData.price.toFixed(2)}\nVolumen: ${formatNumber(rawData.volume, true)}`;
+                                    const dataset = context.dataset;
+                                    const dataPoint = dataset.data[context.dataIndex];
+                                    const rawData = isDailyView ?
+                                        context.dataset.rawData[context.dataIndex] :
+                                        series.find(s => s.symbol === dataset.label).data[context.dataIndex];
+
+                                    return [
+                                        `${dataset.label}: ${dataPoint.y >= 0 ? '+' : ''}${dataPoint.y.toFixed(2)}%`,
+                                        `Variación: $${rawData.variation.toFixed(2)}`,
+                                        `Precio: $${rawData.current_price.toFixed(2)}`,
+                                        `Vol: ${formatNumber(rawData.volume, true)}`
+                                    ];
                                 }
                             }
                         }
@@ -569,39 +723,49 @@
             });
         }
 
-        // Obtener un punto por día (para períodos > 1 día)
+        // Función auxiliar para obtener un punto por día (el último de cada día)
         function getDailyPoints(data) {
             const dailyPoints = [];
             const daysMap = new Map();
 
+            // Agrupar puntos por día
             data.forEach(point => {
                 const date = new Date(point.timestamp);
-                const dayKey = date.toISOString().split('T')[0];
+                const dayKey = `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
 
-                if (!daysMap.has(dayKey) {
-                    daysMap.set(dayKey, {
-                        x: point.timestamp,
-                        y: point.variation,
-                        rawData: point
-                    });
+                if (!daysMap.has(dayKey) ||
+                    new Date(point.timestamp) > new Date(daysMap.get(dayKey).timestamp)) {
+                    daysMap.set(dayKey, point);
                 }
             });
 
-            return Array.from(daysMap.values());
+            // Convertir el mapa a array de puntos
+            daysMap.forEach(point => {
+                dailyPoints.push({
+                    x: point.timestamp,
+                    y: point.variation_percent,
+                    rawData: point // Guardamos los datos originales para el tooltip
+                });
+            });
+
+            return dailyPoints;
         }
 
         // Configurar auto-actualización
         function setupAutoUpdate() {
             clearInterval(autoUpdateInterval);
+
             if (document.getElementById('autoUpdateToggle').checked) {
-                autoUpdateInterval = setInterval(updateCharts, 60000);
+                autoUpdateInterval = setInterval(updateCharts, 60000); // 60 segundos
+                console.log('Auto-actualización activada');
             }
         }
 
         // Mostrar errores
         function showError(message) {
-            document.getElementById('errorMessage').textContent = message;
-            document.getElementById('errorMessage').style.display = 'block';
+            const errorElement = document.getElementById('errorMessage');
+            errorElement.textContent = message;
+            errorElement.style.display = 'block';
         }
 
         // Limpiar gráficos
@@ -610,47 +774,26 @@
                 variationChart.destroy();
                 variationChart = null;
             }
+            document.getElementById('singleStockIndicators').style.display = 'none';
+            document.getElementById('singleStockIndicators2').style.display = 'none';
+            document.getElementById('multipleStocksSummary').style.display = 'none';
         }
 
-        // Formatear números
-        function formatNumber(num, isVolume = false) {
-            if (num === null || num === undefined) return 'N/A';
-            if (num >= 1e9) return (num / 1e9).toFixed(2) + 'B';
-            if (num >= 1e6) return (num / 1e6).toFixed(2) + 'M';
-            if (num >= 1e3) return (num / 1e3).toFixed(2) + 'K';
-            return num.toFixed(2);
-        }
-
-        // Obtener texto del período
-        function getPeriodText(period) {
-            const periods = {
-                '1d': '1 día',
-                '1w': '1 semana',
-                '1m': '1 mes',
-                '3m': '3 meses'
-            };
-            return periods[period] || period;
-        }
-
-        // Obtener símbolos seleccionados
-        function getSelectedSymbols() {
-            const symbols = [];
-            document.querySelectorAll('input[type="checkbox"]:checked').forEach(checkbox => {
-                symbols.push(checkbox.value);
-            });
-            return symbols;
-        }
-
-        // Inicialización
+        // Event Listeners
         document.addEventListener('DOMContentLoaded', () => {
             updateCharts();
             setupAutoUpdate();
+        });
 
-            // Event listeners
-            document.getElementById('autoUpdateToggle').addEventListener('change', setupAutoUpdate);
-            document.getElementById('period').addEventListener('change', updateCharts);
-            document.querySelectorAll('input[type="checkbox"]').forEach(checkbox => {
-                checkbox.addEventListener('change', updateCharts);
+        document.getElementById('autoUpdateToggle').addEventListener('change', setupAutoUpdate);
+        document.getElementById('period').addEventListener('change', () => {
+            updateCharts();
+            setupAutoUpdate();
+        });
+        document.querySelectorAll('input[type="checkbox"]').forEach(checkbox => {
+            checkbox.addEventListener('change', () => {
+                updateCharts();
+                setupAutoUpdate();
             });
         });
     </script>

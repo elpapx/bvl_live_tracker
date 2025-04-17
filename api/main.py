@@ -788,14 +788,16 @@ async def get_time_series(
 
     return TimeSeriesResponse(series=result)
 
+
 @app.get("/api/timeseries-with-profitability", response_model=TimeSeriesResponse)
 async def get_time_series_with_profitability(
         symbol: str = Query("BAP", description="Símbolo a consultar (BAP, BRK-B, ILF)"),
-        period: str = Query("1w", description="Periodo (1d, 1w, 1m, 3m)"),
+        period: str = Query("1w", description="Periodo (realtime, 1d, 1w, 1m, 3m)"),
         compare_all: bool = Query(False, description="Mostrar todos los símbolos juntos")
 ):
     """Obtiene series temporales con información de rentabilidad, volumen y PE Ratio"""
     periods_map = {
+        "realtime": timedelta(days=1),  # Ya no usaremos esto para realtime
         "1d": timedelta(days=1),
         "1w": timedelta(weeks=1),
         "1m": timedelta(days=30),
@@ -836,10 +838,25 @@ async def get_time_series_with_profitability(
                 logger.warning(f"No hay datos combinados para {sym}")
                 continue
 
-            # Aplicar filtro de período
-            start_date = end_date - periods_map[period]
-            filtered_df = combined_df[(combined_df['timestamp'] >= start_date) &
-                                      (combined_df['timestamp'] <= end_date)]
+            # Para "realtime", solo obtener datos del día actual entre 8 AM y 4 PM
+            if period == "realtime":
+                # Obtener solo el día actual
+                today = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
+
+                filtered_df = combined_df[(combined_df['timestamp'] >= today) &
+                                          (combined_df['timestamp'] <= end_date)]
+
+                # Filtrar por horas de mercado (8 AM - 4 PM)
+                filtered_df = filtered_df[
+                    (filtered_df['timestamp'].dt.hour >= 8) &
+                    (filtered_df['timestamp'].dt.hour <= 16)
+                    ]
+            else:
+                # Para los demás períodos, aplicar filtro según el mapa de períodos
+                start_date = end_date - periods_map[period]
+                filtered_df = combined_df[(combined_df['timestamp'] >= start_date) &
+                                          (combined_df['timestamp'] <= end_date)]
+
             filtered_df = filtered_df.sort_values('timestamp')
 
             logger.info(f"Datos filtrados para {sym} ({period}): {len(filtered_df)} registros")
@@ -927,9 +944,6 @@ async def get_time_series_with_profitability(
             logger.error(f"Error procesando {sym}: {str(e)}", exc_info=True)
 
     return TimeSeriesResponse(series=result)
-
-
-
 
 
 @app.get("/portfolio/holdings/live", response_model=PortfolioHoldings)
