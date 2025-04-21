@@ -4,24 +4,44 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Monitor de Acciones Inteligente</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="css/styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0"></script>
     <script src="https://cdn.jsdelivr.net/npm/moment"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment"></script>
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
     <style>
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background-color: #f8f9fa;
-            color: #333;
+          font-family: 'IBM Plex Sans', sans-serif;
+          margin: 0; padding: 20px;
+          background-color: #f8f9fa;
+          color: #333;
         }
         .dashboard {
             display: grid;
             grid-template-columns: 1fr;
-            gap: 20px;
-            max-width: 1200px;
+            gap: 0px;
+            max-width: 1800px;
             margin: 0 auto;
+          }
+        .toggle-btn {
+            position: fixed;
+            top: 16px;
+            left: 16px;
+            background: rgba(0,0,0,0.05);
+            border: none;
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-size: 18px;
+            line-height: 1;
+            cursor: pointer;
+            transition: 0.2s;
+            z-index: 1000;
+          }
+        .toggle-btn:hover {
+          background: rgba(0,0,0,0.1);
+        }
+        .hide-controls {
+          display: none !important;
         }
         .controls {
             background: white;
@@ -299,6 +319,7 @@
 </head>
 <body>
     <div class="dashboard">
+      <button id="toggle-controls-btn" class="toggle-btn" aria-label="Mostrar u ocultar controles">☰</button>
         <div class="controls">
             <div class="control-group">
                 <label>Período:</label>
@@ -400,6 +421,19 @@
     </div>
 
     <script>
+
+        // Ocultar y mostrar div "controls"
+        const toggleBtn = document.getElementById('toggle-controls-btn');
+        const controls = document.querySelector('.controls');
+
+        toggleBtn.addEventListener('click', () => {
+          const isHidden = controls.classList.toggle('hide-controls');
+          // cambiamos icono: ☰ = abrir, × = cerrar
+          toggleBtn.textContent = isHidden ? '☰' : '×';
+          // opcionalmente actualizas aria-expanded:
+          toggleBtn.setAttribute('aria-expanded', String(!isHidden));
+        });
+
         // Variables globales
         let priceChart;
         let autoUpdateInterval;
@@ -706,6 +740,12 @@
             };
             return periods[period] || period;
         }
+        function hexToRGBA(hex, alpha) {
+            const cleaned = hex.replace('#','');
+            const [r, g, b] = cleaned.match(/.{1,2}/g).map(h => parseInt(h, 16));
+            return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+        }
+
         function renderPriceChart(series) {
             const ctx = document.getElementById('priceChart').getContext('2d');
             if (priceChart) priceChart.destroy();
@@ -764,11 +804,21 @@
                                 label: item.symbol,
                                 data: dataPoints,
                                 borderColor: colors[item.symbol],
-                                backgroundColor: colors[item.symbol] + '20',
+                                backgroundColor: ctx => {
+                                  const { ctx: c, chartArea: area } = ctx.chart;
+                                  if (!area) return null;
+
+                                  const grad = c.createLinearGradient(0, area.top, 0, area.bottom);
+                                  const hex = colors[item.symbol];
+                                  grad.addColorStop(0, hexToRGBA(hex, 0.4));
+                                  grad.addColorStop(1, hexToRGBA(hex, 0));
+                                  return grad;
+                                },
+                                //backgroundColor: colors[item.symbol] + '20',
                                 tension: 0.1,
                                 borderWidth: 2,
                                 pointRadius: 3,
-                                fill: false
+                                fill: true // activa el relleno
                             };
                         }
                         // Configuración para vista en tiempo real
@@ -788,11 +838,20 @@
                                     rawData: point
                                 })),
                                 borderColor: colors[item.symbol],
-                                backgroundColor: colors[item.symbol] + '20',
+                                backgroundColor: ctx => {
+                                  const { ctx: c, chartArea: area } = ctx.chart;
+                                  if (!area) return null;
+
+                                  const grad = c.createLinearGradient(0, area.top, 0, area.bottom);
+                                  const hex = colors[item.symbol];
+                                  grad.addColorStop(0, hexToRGBA(hex, 0.4));
+                                  grad.addColorStop(1, hexToRGBA(hex, 0));
+                                  return grad;
+                                },
                                 tension: 0.1,
                                 borderWidth: 2,
                                 pointRadius: 0,
-                                fill: false
+                                fill: true
                             };
                         }
                         // Configuración para vistas diarias (semana, mes, 3 meses)
@@ -807,11 +866,20 @@
                                         rawData: point
                                     })),
                                 borderColor: colors[item.symbol],
-                                backgroundColor: colors[item.symbol] + '20',
+                                backgroundColor: ctx => {
+                                  const { ctx: c, chartArea: area } = ctx.chart;
+                                  if (!area) return null;
+
+                                  const grad = c.createLinearGradient(0, area.top, 0, area.bottom);
+                                  const hex = colors[item.symbol];
+                                  grad.addColorStop(0, hexToRGBA(hex, 0.4));
+                                  grad.addColorStop(1, hexToRGBA(hex, 0));
+                                  return grad;
+                                },
                                 tension: 0.1,
                                 borderWidth: 2,
                                 pointRadius: isDailyView ? 3 : 0,
-                                fill: false
+                                fill: true
                             };
                         }
                     })

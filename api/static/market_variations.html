@@ -4,13 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Monitor de Variación de Acciones</title>
+    <link rel="stylesheet" href="css/styles.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/moment"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment"></script>
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
     <style>
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-family: 'IBM Plex Sans', sans-serif;
             margin: 0;
             padding: 20px;
             background-color: #f8f9fa;
@@ -19,9 +20,29 @@
         .dashboard {
             display: grid;
             grid-template-columns: 1fr;
-            gap: 20px;
-            max-width: 1200px;
+            gap: 0px;
+            max-width: 1800px;
             margin: 0 auto;
+        }
+        .toggle-btn {
+            position: fixed;
+            top: 16px;
+            left: 16px;
+            background: rgba(0,0,0,0.05);
+            border: none;
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-size: 18px;
+            line-height: 1;
+            cursor: pointer;
+            transition: 0.2s;
+            z-index: 1000;
+        }
+        .toggle-btn:hover {
+          background: rgba(0,0,0,0.1);
+        }
+        .hide-controls {
+          display: none !important;
         }
         .controls {
             background: white;
@@ -226,7 +247,7 @@
         /* Nuevo componente para el resumen de múltiples acciones */
         .stocks-summary {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(450px, 1fr));
             gap: 15px;
             margin-top: 20px;
         }
@@ -299,6 +320,7 @@
 </head>
 <body>
     <div class="dashboard">
+      <button id="toggle-controls-btn" class="toggle-btn" aria-label="Mostrar u ocultar controles">☰</button>
         <div class="controls">
             <div class="control-group">
                 <label>Período:</label>
@@ -400,6 +422,17 @@
     </div>
 
     <script>
+        // Ocultar y mostrar div "controls"
+        const toggleBtn = document.getElementById('toggle-controls-btn');
+        const controls = document.querySelector('.controls');
+
+        toggleBtn.addEventListener('click', () => {
+          const isHidden = controls.classList.toggle('hide-controls');
+          // cambiamos icono: ☰ = abrir, × = cerrar
+          toggleBtn.textContent = isHidden ? '☰' : '×';
+          // opcionalmente actualizas aria-expanded:
+          toggleBtn.setAttribute('aria-expanded', String(!isHidden));
+        });
         // Variables globales
         let variationChart;
         let autoUpdateInterval;
