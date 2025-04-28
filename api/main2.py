@@ -96,8 +96,8 @@ perf_logger = logging.getLogger('performance')
 # ------------------------------
 
 # Parámetros de la caché
-MAX_CACHE_SIZE = 10  # Número máximo de DataFrames en caché
-CACHE_ITEM_TTL = 300  # 5 minutos en segundos
+MAX_CACHE_SIZE = 5  # Número máximo de DataFrames en caché
+CACHE_ITEM_TTL = 600  # 5 minutos en segundos
 
 
 class CacheItem:
@@ -276,7 +276,7 @@ def get_file_last_modified(file_path: str) -> float:
 
 
 def load_dataframe(symbol: str, force_reload: bool = False) -> pd.DataFrame:
-    """Carga el DataFrame desde el CSV con manejo de caché mejorado"""
+    """Carga el DataFrame desde el CSV con manejo de caché optimizado"""
     global dataframes_cache, cache_size
 
     file_path = get_csv_path(symbol)
@@ -305,44 +305,61 @@ def load_dataframe(symbol: str, force_reload: bool = False) -> pd.DataFrame:
                 logger.error(f"Archivo CSV no encontrado: {file_path}")
                 return None
 
-            df = pd.read_csv(file_path)
+            # Optimizar la carga del CSV - solo cargar columnas necesarias si es posible
+            try:
+                # Primero intenta detectar columnas para optimizar la carga
+                cols_preview = pd.read_csv(file_path, nrows=5)
+                needed_cols = ['timestamp', 'currentPrice', 'previousClose', 'open',
+                               'dayLow', 'dayHigh', 'dividendYield', 'volumen',
+                               'marketCap', 'trailingPE', 'fiftyTwoWeekRange']
 
-            # Procesamiento del DataFrame
+                # Solo incluye columnas que realmente existen en el archivo
+                cols_to_use = [col for col in needed_cols if col in cols_preview.columns]
+
+                # Si tenemos columnas identificadas, cargamos solo esas
+                if cols_to_use:
+                    df = pd.read_csv(file_path, usecols=cols_to_use)
+                else:
+                    df = pd.read_csv(file_path)
+            except Exception:
+                # Si falla la optimización carga archivo
+                df = pd.read_csv(file_path)
+
+            # Procesamiento básico del DataFrame
             columns_to_drop = [col for col in ['symbol', 'Symbol', 'Ticker'] if col in df.columns]
             df = df.drop(columns=columns_to_drop)
 
+            # Asegurarse de que existan columnas requeridas
             required_cols = ['timestamp', 'currentPrice']
             for col in required_cols:
                 if col not in df.columns:
                     logger.error(f"Columna requerida '{col}' no encontrada en {file_path}")
                     return None
 
+            # Conversión eficiente de tipos de datos
             df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
             df = df.dropna(subset=['timestamp'])
 
-            if 'volumen' not in df.columns:
-                volume_col = next((col for col in df.columns if 'vol' in col.lower()), None)
-                if volume_col:
-                    df['volumen'] = df[volume_col]
-                else:
-                    df['volumen'] = 0
+            # Optimizar la memoria usando tipos de datos eficientes
+            if 'currentPrice' in df.columns:
+                df['currentPrice'] = pd.to_numeric(df['currentPrice'], errors='coerce', downcast='float')
 
-            numeric_cols = ['currentPrice', 'open', 'dayHigh', 'dayLow', 'volumen',
-                            'marketCap', 'trailingPE', 'dividendYield']
+            if 'volumen' in df.columns:
+                df['volumen'] = pd.to_numeric(df['volumen'], errors='coerce', downcast='integer')
+            elif 'volume' in df.columns:
+                df['volumen'] = pd.to_numeric(df['volume'], errors='coerce', downcast='integer')
+            else:
+                df['volumen'] = 0
+
+            # Convertir columnas numéricas con downcast para usar menos memoria
+            numeric_cols = ['open', 'dayHigh', 'dayLow', 'marketCap', 'trailingPE', 'dividendYield']
             existing_numeric_cols = [col for col in numeric_cols if col in df.columns]
             for col in existing_numeric_cols:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+                df[col] = pd.to_numeric(df[col], errors='coerce', downcast='float')
 
+            # Usar string category para columnas de texto para ahorrar memoria
             if 'fiftyTwoWeekRange' in df.columns:
-                df['fiftyTwoWeekRange'] = df['fiftyTwoWeekRange'].astype(str)
-                df.loc[df['fiftyTwoWeekRange'] == 'nan', 'fiftyTwoWeekRange'] = None
-
-            df = df.ffill().bfill()
-            df = df.replace([np.inf, -np.inf], np.nan)
-
-            if df.empty:
-                logger.error(f"DataFrame vacío después de limpieza para {symbol}")
-                return None
+                df['fiftyTwoWeekRange'] = df['fiftyTwoWeekRange'].astype('category')
 
             df = df.sort_values('timestamp')
 
@@ -1248,27 +1265,7 @@ def health_check():
         "cached_symbols": list(dataframes_cache.keys())
     }
 
-# Función para iniciar el bucle de actualización periódica
-def start_periodic_updates():
-    """
-    Inicia un hilo para actualizar periódicamente todos los datos
-    """
-    def update_loop():
-        while True:
-            try:
-                logger.info("Iniciando actualización periódica de datos")
-                background_update_all_dataframes()
-                # Esperar 60 segundos antes de la próxima actualización
-                time.sleep(60)  # Cambiado de 2 a 60 segundos para reducir carga
-            except Exception as e:
-                logger.error(f"Error en el bucle de actualización: {str(e)}")
-                # Si hay un error, esperar 10 segundos antes de reintentar
-                time.sleep(10)
 
-    # Iniciar el hilo de actualización
-    update_thread = threading.Thread(target=update_loop, daemon=True)
-    update_thread.start()
-    logger.info("Hilo de actualización periódica iniciado")
 
 # Añadir estos endpoints después de la definición de los endpoints existentes
 # y antes de la función startup_event
@@ -1393,25 +1390,42 @@ async def stock_exception_handler(request: Request, exc: StockAPIException):
 
 # ---- FUNCIONES DE INICIO --------
 # ------------------------------
-
 def start_periodic_updates():
     """
     Inicia un hilo para actualizar periódicamente todos los datos
-
-    El hilo ejecuta actualizaciones cada 60 segundos y maneja errores
-    con reintentos cada 10 segundos en caso de fallos.
+    con frecuencia reducida y actualizaciones escalonadas
     """
 
     def update_loop():
         while True:
             try:
                 logger.info("Iniciando actualización periódica de datos")
-                background_update_all_dataframes()
-                time.sleep(60)
+
+                # Obtener todos los símbolos disponibles
+                symbols = list_available_stocks_internal()
+
+                # Actualizar cada símbolo con un retraso entre ellos para evitar picos de carga
+                for symbol in symbols:
+                    try:
+                        logger.info(f"Actualizando datos para {symbol}")
+                        load_dataframe(symbol, force_reload=True)
+                        # Esperar 5 segundos entre cada símbolo
+                        time.sleep(5)
+                    except Exception as e:
+                        logger.error(f"Error actualizando {symbol}: {str(e)}")
+
+                logger.info(f"Actualización completada para {len(symbols)} símbolos")
+
+                # Esperar 5 minutos (300 segundos) antes de la próxima actualización
+                # Mucho más amigable que 60 segundos
+                time.sleep(300)
+
             except Exception as e:
                 logger.error(f"Error en el bucle de actualización: {str(e)}")
-                time.sleep(10)
+                # Si hay un error, esperar antes de reintentar
+                time.sleep(30)
 
+    # Iniciar el hilo de actualización
     update_thread = threading.Thread(target=update_loop, daemon=True)
     update_thread.start()
     logger.info("Hilo de actualización periódica iniciado")
@@ -1451,4 +1465,13 @@ def shutdown_event():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    # Configuración más robusta para el servidor
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=False,  # Deshabilitar reload en producción
+        workers=2,  # Reducir número de workers
+        timeout_keep_alive=65,  # Mayor tiempo de keep-alive
+        log_level="info"
+    )
