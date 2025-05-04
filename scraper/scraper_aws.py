@@ -4,7 +4,7 @@ import time
 import os
 import logging
 import boto3
-import io
+from io import StringIO
 from typing import Dict, List
 from pathlib import Path
 from datetime import datetime
@@ -12,11 +12,15 @@ from datetime import datetime
 
 # Configuración centralizada
 class ScraperConfig:
+    # Configuración de AWS
+    AWS_REGION = "us-east-1"  # Cambia a tu región preferida
+    S3_BUCKET_NAME = "bvl-monitor-data"  # Cambia al nombre de tu bucket
+
     # Configuración de rutas
     SCRIPT_DIR = Path(__file__).parent
     PROJECT_ROOT = SCRIPT_DIR.parent
-    LOCAL_DATA_DIR = PROJECT_ROOT / "data"  # Mantener directorio local como respaldo
-    LOGS_DIR = PROJECT_ROOT / "logs"
+    DATA_DIR = "data"  # Ahora será una carpeta en S3
+    LOGS_DIR = PROJECT_ROOT / "logs"  # Logs se mantienen locales
 
     # Configuración de tiempo
     UPDATE_INTERVAL_MINUTES = 1
@@ -26,10 +30,6 @@ class ScraperConfig:
     # Configuración de logging
     LOG_LEVEL = logging.INFO
     LOG_FORMAT = '%(asctime)s - %(levelname)s - %(message)s'
-
-    # Configuración de Amazon S3
-    S3_BUCKET = "nombre-de-tu-bucket"
-    S3_PREFIX = "financial-data/"  # Prefijo para organizar los archivos en S3
 
     # Instrumentos a rastrear
     INSTRUMENTS = {
@@ -60,6 +60,7 @@ class ScraperConfig:
                 "open",
                 "dayLow",
                 "dayHigh",
+                # Cambiar "volume" por "volumen" 👇
                 "volumen",  # Nombre personalizado para el CSV
                 "regularMarketVolume",
                 "averageVolume",
@@ -73,22 +74,52 @@ class ScraperConfig:
             ],
             "filename": "ilf_etf_data.csv",
             "is_etf": True,
+            # Añadir mapeo de campos especiales 👇
             "field_mapping": {"volume": "volumen"}  # Mapeo de Yahoo Finance -> CSV
         }
     }
 
 
-class S3DataScraper:
+class DataScraper:
     def __init__(self):
         self._setup_directories()
         self._setup_logging()
         self.logger = logging.getLogger(__name__)
-        self._setup_s3_client()
+
+        # Inicializar cliente S3
+        self.s3_client = boto3.client(
+            's3',
+            region_name=ScraperConfig.AWS_REGION
+        )
+
+        # Verificar existencia del bucket
+        self._verify_s3_bucket()
 
     def _setup_directories(self):
         """Crea los directorios necesarios si no existen"""
-        os.makedirs(ScraperConfig.LOCAL_DATA_DIR, exist_ok=True)
+        # Solo creamos directorios locales para logs
         os.makedirs(ScraperConfig.LOGS_DIR, exist_ok=True)
+
+    def _verify_s3_bucket(self):
+        """Verifica que el bucket de S3 exista, lo crea si no existe"""
+        try:
+            self.s3_client.head_bucket(Bucket=ScraperConfig.S3_BUCKET_NAME)
+            self.logger.info(f"Bucket {ScraperConfig.S3_BUCKET_NAME} verificado correctamente")
+        except Exception as e:
+            if "404" in str(e):
+                self.logger.info(f"Bucket {ScraperConfig.S3_BUCKET_NAME} no existe, creándolo...")
+                try:
+                    self.s3_client.create_bucket(
+                        Bucket=ScraperConfig.S3_BUCKET_NAME,
+                        CreateBucketConfiguration={'LocationConstraint': ScraperConfig.AWS_REGION}
+                    )
+                    self.logger.info(f"Bucket {ScraperConfig.S3_BUCKET_NAME} creado exitosamente")
+                except Exception as create_err:
+                    self.logger.error(f"Error al crear bucket: {str(create_err)}")
+                    raise
+            else:
+                self.logger.error(f"Error al verificar bucket: {str(e)}")
+                raise
 
     def _setup_logging(self):
         """Configura el sistema de logging"""
@@ -103,14 +134,16 @@ class S3DataScraper:
             ]
         )
 
-    def _setup_s3_client(self):
-        """Inicializa el cliente de AWS S3"""
+    def _check_file_exists_in_s3(self, filepath):
+        """Verifica si un archivo existe en S3"""
         try:
-            self.s3_client = boto3.client('s3')
-            self.logger.info("Cliente de S3 inicializado correctamente")
-        except Exception as e:
-            self.logger.error(f"Error al inicializar cliente S3: {str(e)}", exc_info=True)
-            raise
+            self.s3_client.head_object(
+                Bucket=ScraperConfig.S3_BUCKET_NAME,
+                Key=filepath
+            )
+            return True
+        except Exception:
+            return False
 
     def fetch_instrument_data(self, symbol: str, config: Dict) -> Dict:
         """Obtiene los datos del instrumento financiero"""
@@ -162,79 +195,51 @@ class S3DataScraper:
             self.logger.error(f"Error al obtener datos de {symbol}: {str(e)}", exc_info=True)
             return None
 
-    def _read_existing_from_s3(self, s3_key):
-        """Lee un archivo CSV existente desde S3"""
-        try:
-            response = self.s3_client.get_object(Bucket=ScraperConfig.S3_BUCKET, Key=s3_key)
-            return pd.read_csv(io.BytesIO(response['Body'].read()))
-        except self.s3_client.exceptions.NoSuchKey:
-            self.logger.info(f"Archivo no encontrado en S3: {s3_key}. Se creará uno nuevo.")
-            return None
-        except Exception as e:
-            self.logger.error(f"Error al leer archivo de S3 {s3_key}: {str(e)}", exc_info=True)
-            return None
-
-    def save_to_s3(self, data: Dict, filename: str) -> None:
-        """Guarda los datos en S3 y opcionalmente en el sistema de archivos local"""
+    def save_to_csv(self, data: Dict, filename: str) -> None:
+        """Guarda los datos en CSV en S3"""
         if data is None:
             self.logger.warning("No hay datos para guardar")
             return
 
         try:
-            # Crear DataFrame con los nuevos datos
-            new_data_df = pd.DataFrame([data])
+            # Ruta del archivo en S3
+            s3_key = f"{ScraperConfig.DATA_DIR}/{filename}"
 
-            # Ruta S3 completa
-            s3_key = f"{ScraperConfig.S3_PREFIX}{filename}"
+            # Crear dataframe con los nuevos datos
+            new_df = pd.DataFrame([data])
 
             # Verificar si el archivo ya existe en S3
-            existing_df = self._read_existing_from_s3(s3_key)
+            if self._check_file_exists_in_s3(s3_key):
+                # Leer el archivo existente de S3
+                response = self.s3_client.get_object(
+                    Bucket=ScraperConfig.S3_BUCKET_NAME,
+                    Key=s3_key
+                )
+                existing_df = pd.read_csv(response['Body'])
 
-            if existing_df is not None:
-                # Concatenar datos existentes con nuevos
-                combined_df = pd.concat([existing_df, new_data_df], ignore_index=True)
-                self.logger.info(f"Añadiendo datos a archivo existente en S3: {s3_key}")
+                # Concatenar con los nuevos datos
+                df = pd.concat([existing_df, new_df], ignore_index=True)
+                self.logger.info(f"Datos añadidos a {filename} en S3")
             else:
-                # Usar solo los nuevos datos
-                combined_df = new_data_df
-                self.logger.info(f"Creando nuevo archivo en S3: {s3_key}")
+                # Crear nuevo archivo
+                df = new_df
+                self.logger.info(f"Archivo {filename} creado exitosamente en S3")
 
-            # Convertir DataFrame a CSV en memoria
-            csv_buffer = io.StringIO()
-            combined_df.to_csv(csv_buffer, index=False)
+            # Convertir el dataframe a un buffer CSV en memoria
+            csv_buffer = StringIO()
+            df.to_csv(csv_buffer, index=False)
 
-            # Subir a S3
+            # Subir el buffer a S3
             self.s3_client.put_object(
-                Bucket=ScraperConfig.S3_BUCKET,
+                Bucket=ScraperConfig.S3_BUCKET_NAME,
                 Key=s3_key,
-                Body=csv_buffer.getvalue(),
-                ContentType='text/csv'
+                Body=csv_buffer.getvalue()
             )
-            self.logger.info(f"Datos guardados exitosamente en S3: {s3_key}")
-
-            # También guardar localmente como respaldo
-            local_filepath = ScraperConfig.LOCAL_DATA_DIR / filename
-            combined_df.to_csv(local_filepath, index=False)
-            self.logger.debug(f"Respaldo local guardado en: {local_filepath}")
 
             self.logger.debug(f"Último registro: {data['timestamp']}")
 
         except Exception as e:
-            self.logger.error(f"Error al guardar datos en S3 para {filename}: {str(e)}", exc_info=True)
-
-            # Intentar guardar localmente en caso de error con S3
-            try:
-                filepath = ScraperConfig.LOCAL_DATA_DIR / filename
-                df = pd.DataFrame([data])
-
-                if filepath.exists():
-                    df.to_csv(filepath, mode='a', header=False, index=False)
-                else:
-                    df.to_csv(filepath, mode='w', header=True, index=False)
-
-                self.logger.info(f"Datos guardados localmente como respaldo en: {filepath}")
-            except Exception as local_err:
-                self.logger.error(f"Error también al guardar localmente: {str(local_err)}", exc_info=True)
+            self.logger.error(f"Error al guardar datos en {filename} en S3: {str(e)}", exc_info=True)
 
     def run_scraping_cycle(self) -> None:
         """Ejecuta un ciclo completo de scraping"""
@@ -242,18 +247,17 @@ class S3DataScraper:
         for symbol, config in ScraperConfig.INSTRUMENTS.items():
             data = self.fetch_instrument_data(symbol, config)
             if data:
-                self.save_to_s3(data, config["filename"])
+                self.save_to_csv(data, config["filename"])
         self.logger.info("Ciclo de scraping completado")
 
     def run(self) -> None:
         """Ejecuta el scraping en intervalos regulares"""
-        self.logger.info("Iniciando proceso de scraping con almacenamiento en S3")
-        self.logger.info(f"Bucket S3: {ScraperConfig.S3_BUCKET}")
-        self.logger.info(f"Prefijo S3: {ScraperConfig.S3_PREFIX}")
+        self.logger.info("Iniciando proceso de scraping")
         self.logger.info(f"Instrumentos monitoreados: {', '.join(ScraperConfig.INSTRUMENTS.keys())}")
         self.logger.info(f"Intervalo de actualización: {ScraperConfig.UPDATE_INTERVAL_MINUTES} minutos")
         self.logger.info(f"Duración total del proceso: {ScraperConfig.TOTAL_RUNTIME_HOURS} horas")
-        self.logger.info(f"Ubicación de respaldos locales: {ScraperConfig.LOCAL_DATA_DIR}")
+        self.logger.info(f"Bucket S3: {ScraperConfig.S3_BUCKET_NAME}")
+        self.logger.info(f"Carpeta S3: {ScraperConfig.DATA_DIR}")
         self.logger.info(f"Ubicación de archivos de log: {ScraperConfig.LOGS_DIR}")
 
         try:
@@ -276,5 +280,5 @@ class S3DataScraper:
 
 
 if __name__ == "__main__":
-    scraper = S3DataScraper()
+    scraper = DataScraper()
     scraper.run()
