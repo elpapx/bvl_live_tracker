@@ -28,7 +28,7 @@ import pytz
 # ------------------------------
 # PostgreSQL Database Configuration
 DB_CONFIG = {
-    "host": "localhost",
+    "host": "98.85.189.191",
     "port": 5432,
     "database": "bvl_monitor",
     "user": "bvl_user",
@@ -1118,7 +1118,7 @@ async def get_time_series_variations(
         for sym in symbols_to_fetch:
             try:
                 # Cargar datos con manejo seguro
-                current_df = load_dataframe(sym)
+                current_df = load_stock_data_from_db(sym)
 
                 # Manejo seguro de DataFrames vacíos
                 if current_df is None or current_df.empty:
@@ -1307,49 +1307,94 @@ async def get_time_series_variations(
             code="INTERNAL_PROCESSING_ERROR"
         )
 
+
 @app.get("/portfolio/holdings/live", response_model=PortfolioHoldings, tags=["Portfolio"])
 def get_portfolio_holdings_live():
     """Gets real-time portfolio holdings data"""
     holdings = []
-    portfolio_total_value = 0
-    portfolio_todays_change_value = 0
-    portfolio_total_gain_loss = 0
-    portfolio_previous_value = 0
+    portfolio_total_value = 0.0
+    portfolio_todays_change_value = 0.0
+    portfolio_total_gain_loss = 0.0
+    portfolio_previous_value = 0.0
 
     for symbol, data in PORTFOLIO_DATA.items():
         try:
-            current_data = get_latest_data(symbol)
+            logger.info(f"Procesando símbolo: {symbol}")
 
-            if current_data is None:
-                logger.error(f"No data found for {symbol}")
-                continue
+            # Usar datos respaldo definidos en configuración
+            purchase_price = float(data["purchase_price"])
+            qty = int(data["qty"])
 
-            current_price = current_data.get('currentPrice')
-            previous_close = current_data.get('previousClose')
+            # Intentar obtener datos actuales con manejo de valores nulos
+            if symbol == "BRK-B":
+                # Consulta directa a la base de datos para BRK-B
+                query = """
+                        SELECT current_price, previous_close
+                        FROM stock_data
+                        WHERE symbol = 'BRK-B'
+                        ORDER BY timestamp DESC LIMIT 1
+                        """
+                result = execute_query(query, use_dict_cursor=True)
 
-            if previous_close is None and current_price is not None:
-                logger.warning(f"No previous close data for {symbol}, using current price")
+                # Manejo de valores nulos
+                current_price = None
+                previous_close = None
+
+                if result and len(result) > 0:
+                    if result[0]['current_price'] is not None:
+                        current_price = float(result[0]['current_price'])
+                    if result[0]['previous_close'] is not None:
+                        previous_close = float(result[0]['previous_close'])
+
+                # Si alguno es None, usar valor de respaldo
+                if current_price is None:
+                    current_price = float(ORIGINAL_PRICES.get(symbol, 0.0))
+                    logger.info(f"Usando precio original para {symbol}: {current_price}")
+
+                if previous_close is None:
+                    previous_close = current_price
+                    logger.info(f"Usando current_price como previous_close para {symbol}")
+            else:
+                # Proceso normal para otros símbolos
+                current_data = get_latest_data(symbol)
+
+                # Inicializar con valores de respaldo
+                current_price = float(ORIGINAL_PRICES.get(symbol, 0.0))
                 previous_close = current_price
 
-            if current_price is None:
-                logger.error(f"No current price for {symbol}")
-                continue
+                if current_data is not None:
+                    # Intentar extraer con manejo seguro de nulos
+                    if 'currentPrice' in current_data and current_data['currentPrice'] is not None:
+                        current_price = float(current_data['currentPrice'])
 
-            purchase_price = data["purchase_price"]
-            qty = data["qty"]
+                    if 'previousClose' in current_data and current_data['previousClose'] is not None:
+                        previous_close = float(current_data['previousClose'])
+                    else:
+                        previous_close = current_price
 
+            # Verificar datos críticos una vez más
+            if current_price <= 0:
+                logger.warning(f"Precio inválido para {symbol}, usando precio original")
+                current_price = float(ORIGINAL_PRICES.get(symbol, 1.0))  # Evitar cero
+
+            if previous_close <= 0:
+                previous_close = current_price
+
+            # Calcular métricas con verificación de valores
             todays_change = current_price - previous_close
-            todays_change_percent = (todays_change / previous_close) * 100 if previous_close > 0 else 0
+            todays_change_percent = (todays_change / previous_close) * 100 if previous_close > 0 else 0.0
 
             total_value = current_price * qty
             total_gain_loss = total_value - (purchase_price * qty)
-            total_gain_loss_percent = (total_gain_loss / (purchase_price * qty)) * 100 if purchase_price > 0 else 0
+            total_gain_loss_percent = (total_gain_loss / (purchase_price * qty)) * 100 if purchase_price > 0 else 0.0
 
+            # Actualizar totales del portfolio
             portfolio_total_value += total_value
             portfolio_todays_change_value += todays_change * qty
             portfolio_total_gain_loss += total_gain_loss
             portfolio_previous_value += previous_close * qty
 
+            # Crear objeto holding
             holding = StockHolding(
                 symbol=symbol,
                 description=data["description"],
@@ -1363,10 +1408,41 @@ def get_portfolio_holdings_live():
                 total_gain_loss_percent=round(total_gain_loss_percent, 2)
             )
             holdings.append(holding)
+            logger.info(f"Procesamiento exitoso para {symbol}")
+
         except Exception as e:
             logger.error(f"Error processing portfolio holding for {symbol}: {str(e)}", exc_info=True)
+            # Intentar crear un holding con datos de respaldo
+            try:
+                fallback_price = float(ORIGINAL_PRICES.get(symbol, 0.0))
+                purchase_price = float(data["purchase_price"])
+                qty = int(data["qty"])
 
-    # Check if we have any holdings
+                holding = StockHolding(
+                    symbol=symbol,
+                    description=data["description"],
+                    current_price=fallback_price,
+                    todays_change=0.0,
+                    todays_change_percent=0.0,
+                    purchase_price=purchase_price,
+                    qty=qty,
+                    total_value=fallback_price * qty,
+                    total_gain_loss=(fallback_price - purchase_price) * qty,
+                    total_gain_loss_percent=((
+                                                         fallback_price - purchase_price) / purchase_price) * 100 if purchase_price > 0 else 0.0
+                )
+                holdings.append(holding)
+
+                # Actualizar totales del portfolio con datos de respaldo
+                portfolio_total_value += fallback_price * qty
+                portfolio_total_gain_loss += (fallback_price - purchase_price) * qty
+                portfolio_previous_value += fallback_price * qty
+
+                logger.info(f"Creado holding de respaldo para {symbol}")
+            except Exception as fallback_error:
+                logger.error(f"Error también en respaldo para {symbol}: {str(fallback_error)}")
+
+    # Verificar si tenemos holdings
     if not holdings:
         logger.error("No portfolio holdings could be processed")
         raise StockAPIException(
@@ -1375,16 +1451,23 @@ def get_portfolio_holdings_live():
             code="PORTFOLIO_PROCESSING_ERROR"
         )
 
-    portfolio_initial_value = portfolio_total_value - portfolio_total_gain_loss
-    portfolio_todays_change_percent = (
-        (portfolio_todays_change_value / portfolio_previous_value) * 100
-        if portfolio_previous_value > 0 else 0
-    )
-    portfolio_total_gain_loss_percent = (
-        (portfolio_total_gain_loss / portfolio_initial_value) * 100
-        if portfolio_initial_value > 0 else 0
-    )
+    # Calcular métricas del portfolio con manejo de errores
+    try:
+        portfolio_initial_value = portfolio_total_value - portfolio_total_gain_loss
+        portfolio_todays_change_percent = (
+            (portfolio_todays_change_value / portfolio_previous_value) * 100
+            if portfolio_previous_value > 0 else 0.0
+        )
+        portfolio_total_gain_loss_percent = (
+            (portfolio_total_gain_loss / portfolio_initial_value) * 100
+            if portfolio_initial_value > 0 else 0.0
+        )
+    except Exception as calc_error:
+        logger.error(f"Error calculando métricas del portafolio: {str(calc_error)}")
+        portfolio_todays_change_percent = 0.0
+        portfolio_total_gain_loss_percent = 0.0
 
+    # Devolver respuesta
     return PortfolioHoldings(
         total_value=round(portfolio_total_value, 2),
         todays_change=round(portfolio_todays_change_value, 2),
@@ -1393,7 +1476,6 @@ def get_portfolio_holdings_live():
         total_gain_loss_percent=round(portfolio_total_gain_loss_percent, 2),
         holdings=holdings
     )
-
 
 @app.get("/portfolio/profitability", response_model=List[ProfitabilityData], tags=["Portfolio"])
 def get_portfolio_profitability():
