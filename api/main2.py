@@ -3,50 +3,46 @@
 import os
 import time
 import threading
-import json
 import logging
 from logging.handlers import RotatingFileHandler
-import heapq
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Any, Union, Tuple
+import json
+import traceback
 
+# Third-party libraries
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-
-from datetime import datetime
-from fastapi import FastAPI, HTTPException, BackgroundTasks, status
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.security import APIKeyHeader
-from starlette.responses import FileResponse, JSONResponse, HTMLResponse
+from starlette.responses import FileResponse, JSONResponse, HTMLResponse, Response
 from starlette.requests import Request
-from typing import Dict, List, Optional, Tuple, Any
-from pydantic import BaseModel
-from io import BytesIO
-from fastapi import BackgroundTasks
-from fastapi import APIRouter, Query
-from datetime import datetime, timedelta
-from typing import Dict, List
-import pandas as pd
-import logging
-from pydantic import BaseModel
-from fastapi import FastAPI, Query
-from fastapi.responses import HTMLResponse, FileResponse
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
-import pandas as pd
-import os
+from starlette.status import HTTP_404_NOT_FOUND, HTTP_500_INTERNAL_SERVER_ERROR
+from pydantic import BaseModel, Field
+import pytz
 
-# ---- CONFIGURACIÓN INICIAL --------
+# ---- CONFIGURATION --------
 # ------------------------------
-
-# Precios originales del portfolio
-ORIGINAL_PRICES = {
-    "BAP": 184.88,  # Credicorp
-    "BRK-B": 479.20,  # Berkshire Hathaway B
-    "ILF": 24.10  # iShares Latin America 40 ETF
+# PostgreSQL Database Configuration
+DB_CONFIG = {
+    "host": "98.85.189.191",
+    "port": 5432,
+    "database": "bvl_monitor",
+    "user": "bvl_user",
+    "password": "179fae82"
 }
 
-# Datos fijos del portfolio
+# Original prices and portfolio data
+ORIGINAL_PRICES = {
+    "BAP": 184.88,
+    "BRK-B": 479.20,
+    "ILF": 24.10
+}
+
+# Portfolio data
 PORTFOLIO_DATA = {
     "BAP": {
         "description": "Credicorp Ltd.",
@@ -65,14 +61,26 @@ PORTFOLIO_DATA = {
     }
 }
 
-# ---- CONFIGURACIÓN DE LOGGING MEJORADA --------
-# ------------------------------
+# Cache configuration
+MAX_CACHE_SIZE = 10
+CACHE_ITEM_TTL = 60  # 1 minute in seconds - Reduced to get more recent data frequently
 
-# Configurar directorio de logs
+# Performance monitoring
+PERFORMANCE_METRICS = {
+    "api_calls": 0,
+    "db_reads": 0,
+    "cache_hits": 0,
+    "cache_misses": 0,
+    "errors": 0,
+    "last_error_time": None,
+    "last_error_message": None
+}
+
+# ---- LOGGING CONFIGURATION --------
+# ------------------------------
 log_dir = os.path.join(os.path.dirname(__file__), 'logs')
 os.makedirs(log_dir, exist_ok=True)
 
-# Configurar logging con rotación de archivos
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -87,49 +95,42 @@ logging.basicConfig(
     ]
 )
 
-# Loggers específicos
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("main_postgres")
 cache_logger = logging.getLogger('cache')
 perf_logger = logging.getLogger('performance')
+db_logger = logging.getLogger('database')
 
-# ---- CONFIGURACIÓN DE CACHÉ MEJORADA --------
+
+# ---- CACHE IMPLEMENTATION --------
 # ------------------------------
-
-# Parámetros de la caché
-MAX_CACHE_SIZE = 5  # Número máximo de DataFrames en caché
-CACHE_ITEM_TTL = 600  # 5 minutos en segundos
-
-
 class CacheItem:
     def __init__(self, df, last_modified):
         self.df = df
         self.last_load_time = datetime.now()
         self.last_modified = last_modified
         self.size = df.memory_usage(deep=True).sum() if df is not None else 0
-        self.access_count = 0  # Para política LRU
+        self.access_count = 0
 
     def __lt__(self, other):
         return self.access_count < other.access_count
 
 
-# Variables globales para la caché
 dataframes_cache = {}
 cache_lock = threading.Lock()
-cache_size = 0  # Tamaño total en bytes
+cache_size = 0
 
 
-# ---- MODELOS PYDANTIC --------
+# ---- PYDANTIC MODELS --------
 # ------------------------------
-
 class StockData(BaseModel):
     symbol: str
     currentPrice: float
-    previousClose: float
-    open: float
-    dayLow: float
-    dayHigh: float
+    previousClose: Optional[float] = None
+    open: Optional[float] = None
+    dayLow: Optional[float] = None
+    dayHigh: Optional[float] = None
     dividendYield: Optional[float] = None
-    financialCurrency: str
+    financialCurrency: str = "USD"
     volumen: Optional[int] = None
     timestamp: str
 
@@ -174,25 +175,8 @@ class SymbolTimeSeries(BaseModel):
 
 class TimeSeriesResponse(BaseModel):
     series: List[SymbolTimeSeries]
-    available_periods: List[str] = ["1d", "1w", "1m", "3m"]
+    available_periods: List[str] = ["realtime", "1d", "1w", "1m", "3m"]
     available_symbols: List[str] = ["BAP", "BRK-B", "ILF"]
-
-
-class FinancialDataPoint(BaseModel):
-    timestamp: str
-    price: float
-    volume: Optional[float] = None
-    high: Optional[float] = None
-    low: Optional[float] = None
-    dividend_yield: Optional[float] = None
-    profitability: Optional[float] = None
-
-
-class SymbolFinancialData(BaseModel):
-    symbol: str
-    period: str
-    data: List[FinancialDataPoint]
-    stats: Dict[str, float]
 
 
 class StockHolding(BaseModel):
@@ -216,323 +200,480 @@ class PortfolioHoldings(BaseModel):
     total_gain_loss_percent: float
     holdings: List[StockHolding]
 
+
+class ErrorResponse(BaseModel):
+    error: str = Field(..., description="Error message")
+    code: str = Field(..., description="Error code")
+    timestamp: str = Field(..., description="Error timestamp")
+    details: Optional[Dict[str, Any]] = Field(None, description="Error details")
+
+
 class StockAPIException(HTTPException):
     """Custom exception for stock API errors"""
-    def __init__(self, status_code: int, detail: str, code: str = None):
+
+    def __init__(self, status_code: int, detail: str, code: str = "GENERAL_ERROR"):
         super().__init__(status_code=status_code, detail=detail)
         self.code = code
+        self.timestamp = datetime.now().isoformat()
+        self.details = {}
 
 
-
-# ---- FUNCIONES AUXILIARES MEJORADAS --------
+# ---- DATABASE HELPER FUNCTIONS --------
 # ------------------------------
-
-def clear_cache_if_needed():
-    """Limpia la caché si excede el tamaño máximo usando política LRU"""
-    global cache_size, dataframes_cache
-
-    if len(dataframes_cache) <= MAX_CACHE_SIZE:
-        return
-
-    cache_logger.info(f"Limpiando caché (actual: {len(dataframes_cache)} items)")
-
-    # Ordenar items por contador de accesos (LRU)
-    sorted_items = sorted(dataframes_cache.items(), key=lambda x: x[1].access_count)
-
-    # Eliminar los menos usados hasta estar bajo el límite
-    while len(dataframes_cache) > MAX_CACHE_SIZE and sorted_items:
-        symbol, item = sorted_items.pop(0)
-        cache_size -= item.size
-        del dataframes_cache[symbol]
-        cache_logger.debug(f"Removido {symbol} de caché (tamaño: {item.size / 1024:.2f} KB)")
-
-
-def get_project_root():
-    """Devuelve la ruta relativa a la raíz del proyecto"""
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-
-
-def get_csv_path(symbol: str):
-    """Obtiene la ruta del archivo CSV basado en el símbolo"""
-    root_path = get_project_root()
-
-    if symbol.upper() == "BRK-B":
-        filename = "brk-b_stock_data.csv"
-    elif symbol.upper() == "ILF":
-        filename = "ilf_etf_data.csv"
-    else:
-        filename = f"{symbol.lower()}_{'etf_data' if 'ETF' in symbol.upper() else 'stock_data'}.csv"
-
-    return os.path.join(root_path, "data", filename)
-
-
-def get_file_last_modified(file_path: str) -> float:
-    """Obtiene el timestamp de última modificación del archivo"""
+def get_db_connection():
+    """Create a database connection"""
     try:
-        return os.path.getmtime(file_path) if os.path.exists(file_path) else 0
+        conn = psycopg2.connect(**DB_CONFIG)
+        return conn
     except Exception as e:
-        logger.error(f"Error al obtener la fecha de modificación: {str(e)}")
+        db_logger.error(f"Database connection error: {str(e)}")
+        PERFORMANCE_METRICS["errors"] += 1
+        PERFORMANCE_METRICS["last_error_time"] = datetime.now().isoformat()
+        PERFORMANCE_METRICS["last_error_message"] = f"Database connection error: {str(e)}"
+        raise
+
+
+def execute_query(query, params=None, fetch=True, use_dict_cursor=False):
+    """Execute a query and return results"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor_factory = RealDictCursor if use_dict_cursor else None
+        with conn.cursor(cursor_factory=cursor_factory) as cursor:
+            cursor.execute(query, params)
+
+            if fetch:
+                results = cursor.fetchall()
+                return results
+            else:
+                conn.commit()
+                return cursor.rowcount
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        db_logger.error(f"Query execution error: {str(e)}\nQuery: {query}\nParams: {params}")
+        PERFORMANCE_METRICS["errors"] += 1
+        PERFORMANCE_METRICS["last_error_time"] = datetime.now().isoformat()
+        PERFORMANCE_METRICS["last_error_message"] = f"Query execution error: {str(e)}"
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+
+def list_available_stocks_from_db():
+    """List all available stock symbols from the database"""
+    try:
+        query = "SELECT DISTINCT symbol FROM stock_data ORDER BY symbol"
+        results = execute_query(query)
+
+        # Handle the results as a list of tuples
+        symbols = [row[0] for row in results] if results else []
+        return symbols
+    except Exception as e:
+        logger.error(f"Error listing stocks from database: {str(e)}")
+        # Fallback to default symbols
+        return ["BAP", "BRK-B", "ILF"]
+
+
+def get_last_updated_timestamp(symbol):
+    """Get the last updated timestamp for a symbol"""
+    try:
+        query = "SELECT MAX(timestamp) FROM stock_data WHERE symbol = %s"
+        result = execute_query(query, (symbol,))
+
+        # Handle the result safely
+        if result and result[0] and result[0][0]:
+            return result[0][0].timestamp()
+        return 0
+    except Exception as e:
+        logger.error(f"Error getting last updated timestamp for {symbol}: {str(e)}")
         return 0
 
 
-def load_dataframe(symbol: str, force_reload: bool = False) -> pd.DataFrame:
-    """Carga el DataFrame desde el CSV con manejo de caché optimizado"""
+def load_stock_data_from_db(symbol, force_reload=False, limit=None):
+    """
+    Load stock data from database with caching
+
+    Args:
+        symbol: Stock symbol to load
+        force_reload: Whether to force reload from DB
+        limit: Optional limit of most recent records to fetch
+    """
     global dataframes_cache, cache_size
 
-    file_path = get_csv_path(symbol)
-    current_modified_time = get_file_last_modified(file_path)
+    current_modified_time = get_last_updated_timestamp(symbol)
 
     with cache_lock:
-        # Verificar si el item en caché está expirado
         cache_item = dataframes_cache.get(symbol)
 
-        if cache_item:
-            # Verificar TTL y modificaciones del archivo
+        if cache_item and not force_reload:
             cache_expired = (datetime.now() - cache_item.last_load_time).total_seconds() > CACHE_ITEM_TTL
-            file_modified = current_modified_time > cache_item.last_modified
+            data_modified = current_modified_time > cache_item.last_modified
 
-            if not force_reload and not cache_expired and not file_modified:
+            if not cache_expired and not data_modified:
                 cache_item.access_count += 1
-                cache_logger.debug(f"Usando caché para {symbol} (accesos: {cache_item.access_count})")
+                PERFORMANCE_METRICS["cache_hits"] += 1
+                cache_logger.debug(f"Using cache for {symbol} (accesses: {cache_item.access_count})")
                 return cache_item.df
 
-        # Cargar datos del archivo
-        perf_logger.info(f"Cargando datos para {symbol} {'(forced)' if force_reload else ''}")
-        start_time = time.time()
+        PERFORMANCE_METRICS["cache_misses"] += 1
+        PERFORMANCE_METRICS["db_reads"] += 1
 
         try:
-            if not os.path.exists(file_path):
-                logger.error(f"Archivo CSV no encontrado: {file_path}")
-                return None
+            start_time = time.time()
 
-            # Optimizar la carga del CSV - solo cargar columnas necesarias si es posible
-            try:
-                # Primero intenta detectar columnas para optimizar la carga
-                cols_preview = pd.read_csv(file_path, nrows=5)
-                needed_cols = ['timestamp', 'currentPrice', 'previousClose', 'open',
-                               'dayLow', 'dayHigh', 'dividendYield', 'volumen',
-                               'marketCap', 'trailingPE', 'fiftyTwoWeekRange']
+            # Base query with optional limit for the most recent records
+            base_query = """
+                         SELECT symbol, timestamp, current_price, previous_close, open, day_low, day_high, dividend_yield, volume, fifty_two_week_range, market_cap, trailing_pe, financial_currency
+                         FROM stock_data
+                         WHERE symbol = %s
+                         ORDER BY timestamp \
+                         """
 
-                # Solo incluye columnas que realmente existen en el archivo
-                cols_to_use = [col for col in needed_cols if col in cols_preview.columns]
-
-                # Si tenemos columnas identificadas, cargamos solo esas
-                if cols_to_use:
-                    df = pd.read_csv(file_path, usecols=cols_to_use)
-                else:
-                    df = pd.read_csv(file_path)
-            except Exception:
-                # Si falla la optimización carga archivo
-                df = pd.read_csv(file_path)
-
-            # Procesamiento básico del DataFrame
-            columns_to_drop = [col for col in ['symbol', 'Symbol', 'Ticker'] if col in df.columns]
-            df = df.drop(columns=columns_to_drop)
-
-            # Asegurarse de que existan columnas requeridas
-            required_cols = ['timestamp', 'currentPrice']
-            for col in required_cols:
-                if col not in df.columns:
-                    logger.error(f"Columna requerida '{col}' no encontrada en {file_path}")
-                    return None
-
-            # Conversión eficiente de tipos de datos
-            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
-            df = df.dropna(subset=['timestamp'])
-
-            # Optimizar la memoria usando tipos de datos eficientes
-            if 'currentPrice' in df.columns:
-                df['currentPrice'] = pd.to_numeric(df['currentPrice'], errors='coerce', downcast='float')
-
-            if 'volumen' in df.columns:
-                df['volumen'] = pd.to_numeric(df['volumen'], errors='coerce', downcast='integer')
-            elif 'volume' in df.columns:
-                df['volumen'] = pd.to_numeric(df['volume'], errors='coerce', downcast='integer')
+            # If limit is specified, modify the query to get the most recent records first
+            if limit:
+                query = f"""
+                    SELECT * FROM (
+                        SELECT 
+                            symbol, 
+                            timestamp, 
+                            current_price, 
+                            previous_close, 
+                            open, 
+                            day_low, 
+                            day_high, 
+                            dividend_yield, 
+                            volume, 
+                            fifty_two_week_range, 
+                            market_cap,
+                            trailing_pe,
+                            financial_currency
+                        FROM stock_data 
+                        WHERE symbol = %s 
+                        ORDER BY timestamp DESC
+                        LIMIT {limit}
+                    ) AS recent_data
+                    ORDER BY timestamp
+                """
             else:
-                df['volumen'] = 0
+                query = base_query
 
-            # Convertir columnas numéricas con downcast para usar menos memoria
-            numeric_cols = ['open', 'dayHigh', 'dayLow', 'marketCap', 'trailingPE', 'dividendYield']
-            existing_numeric_cols = [col for col in numeric_cols if col in df.columns]
-            for col in existing_numeric_cols:
-                df[col] = pd.to_numeric(df[col], errors='coerce', downcast='float')
+            results = execute_query(query, (symbol,), use_dict_cursor=True)
 
-            # Usar string category para columnas de texto para ahorrar memoria
-            if 'fiftyTwoWeekRange' in df.columns:
-                df['fiftyTwoWeekRange'] = df['fiftyTwoWeekRange'].astype('category')
+            if not results:
+                logger.warning(f"No data found for symbol {symbol}")
+                return pd.DataFrame()
 
-            df = df.sort_values('timestamp')
+            # Directly convert to DataFrame
+            df = pd.DataFrame(results)
 
-            # Calcular tamaño en memoria
+            # Rename columns to match the expected format in the code
+            column_mapping = {
+                'current_price': 'currentPrice',
+                'previous_close': 'previousClose',
+                'day_low': 'dayLow',
+                'day_high': 'dayHigh',
+                'dividend_yield': 'dividendYield',
+                'volume': 'volumen',
+                'fifty_two_week_range': 'fiftyTwoWeekRange',
+                'market_cap': 'marketCap',
+                'trailing_pe': 'trailingPE',
+                'financial_currency': 'financialCurrency'
+            }
+
+            df = df.rename(columns=column_mapping)
+
+            # Ensure timestamp is datetime
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+
+            # Calculate DataFrame size and log performance
             df_size = df.memory_usage(deep=True).sum()
+            load_time = time.time() - start_time
             perf_logger.info(
-                f"DataFrame {symbol} cargado en {time.time() - start_time:.2f}s - Tamaño: {df_size / 1024:.2f} KB")
+                f"DataFrame {symbol} loaded in {load_time:.2f}s - Size: {df_size / 1024:.2f} KB - Records: {len(df)}")
 
-            # Crear nuevo ítem de caché
+            # Store in cache
             new_cache_item = CacheItem(df, current_modified_time)
             new_cache_item.access_count = 1
 
-            # Actualizar caché
             if symbol in dataframes_cache:
                 cache_size -= dataframes_cache[symbol].size
 
             dataframes_cache[symbol] = new_cache_item
             cache_size += df_size
-
-            # Limpiar caché si es necesario
             clear_cache_if_needed()
 
             return df
 
         except Exception as e:
-            logger.error(f"Error al cargar datos de {symbol}: {str(e)}", exc_info=True)
-            return None
+            logger.error(f"Error loading data for {symbol} from database: {str(e)}", exc_info=True)
+            PERFORMANCE_METRICS["errors"] += 1
+            PERFORMANCE_METRICS["last_error_time"] = datetime.now().isoformat()
+            PERFORMANCE_METRICS["last_error_message"] = f"DataFrame load error: {str(e)}"
+            return pd.DataFrame()
 
 
-def load_historical_data(symbol: str):
-    """Carga datos históricos desde archivos CSV incluyendo volumen"""
-    root_path = get_project_root()
-    if symbol.upper() == "BRK-B":
-        hist_filename = "brk-b_historical.csv"
-    else:
-        hist_filename = f"{symbol.lower()}_historical.csv"
+def clear_cache_if_needed():
+    """Clears cache if it exceeds maximum size using LRU policy"""
+    global cache_size, dataframes_cache
 
-    hist_file_path = os.path.join(root_path, "historical_data", hist_filename)
+    if len(dataframes_cache) <= MAX_CACHE_SIZE:
+        return
 
-    if not os.path.exists(hist_file_path):
-        return None
+    cache_logger.info(f"Clearing cache (current: {len(dataframes_cache)} items)")
+    sorted_items = sorted(dataframes_cache.items(), key=lambda x: x[1].access_count)
 
+    while len(dataframes_cache) > MAX_CACHE_SIZE * 0.8 and sorted_items:  # Clear to 80% capacity
+        symbol, item = sorted_items.pop(0)
+        cache_size -= item.size
+        del dataframes_cache[symbol]
+        cache_logger.debug(f"Removed {symbol} from cache (size: {item.size / 1024:.2f} KB)")
+
+
+# ---- HELPER FUNCTIONS --------
+# ------------------------------
+def get_latest_data(symbol: str) -> Dict:
+    """Gets latest data for a symbol from database"""
+    # Get the most recent record from the database
     try:
-        df = pd.read_csv(hist_file_path)
-        df['timestamp'] = pd.to_datetime(df['Date'], utc=True).dt.tz_localize(None)
-        df = df.dropna(subset=['timestamp'])
+        query = """
+                SELECT symbol, timestamp, current_price, previous_close, open, day_low, day_high, dividend_yield, volume, fifty_two_week_range, market_cap, trailing_pe, financial_currency
+                FROM stock_data
+                WHERE symbol = %s
+                ORDER BY timestamp DESC
+                    LIMIT 1 \
+                """
 
-        df = df.rename(columns={
-            'Open': 'currentPrice',
-            'Volume': 'volumen'
-        })
+        results = execute_query(query, (symbol,), use_dict_cursor=True)
 
-        return df[['timestamp', 'currentPrice', 'volumen']]
+        if not results:
+            logger.warning(f"No data available for {symbol}, returning default values")
+            return {
+                "symbol": symbol,
+                "currentPrice": ORIGINAL_PRICES.get(symbol, 0.0),
+                "previousClose": ORIGINAL_PRICES.get(symbol, 0.0),
+                "open": ORIGINAL_PRICES.get(symbol, 0.0),
+                "dayLow": ORIGINAL_PRICES.get(symbol, 0.0) * 0.98,
+                "dayHigh": ORIGINAL_PRICES.get(symbol, 0.0) * 1.02,
+                "dividendYield": 0.0,
+                "financialCurrency": "USD",
+                "volumen": 0,
+                "timestamp": datetime.now().isoformat()
+            }
+
+        latest_data = results[0]
+
+        # Rename keys to match expected format
+        column_mapping = {
+            'current_price': 'currentPrice',
+            'previous_close': 'previousClose',
+            'day_low': 'dayLow',
+            'day_high': 'dayHigh',
+            'dividend_yield': 'dividendYield',
+            'volume': 'volumen',
+            'fifty_two_week_range': 'fiftyTwoWeekRange',
+            'market_cap': 'marketCap',
+            'trailing_pe': 'trailingPE',
+            'financial_currency': 'financialCurrency'
+        }
+
+        for old_key, new_key in column_mapping.items():
+            if old_key in latest_data:
+                latest_data[new_key] = latest_data.pop(old_key)
+
+        # Format timestamp
+        if 'timestamp' in latest_data and latest_data['timestamp']:
+            latest_data['timestamp'] = latest_data['timestamp'].isoformat()
+
+        # Ensure all required fields exist
+        required_columns = ['currentPrice', 'previousClose', 'open', 'dayLow', 'dayHigh',
+                            'dividendYield', 'financialCurrency', 'volumen', 'timestamp']
+
+        for col in required_columns:
+            if col not in latest_data:
+                if col == 'currentPrice' and symbol in ORIGINAL_PRICES:
+                    latest_data[col] = ORIGINAL_PRICES[symbol]
+                elif col == 'financialCurrency':
+                    latest_data[col] = "USD"
+                elif col == 'timestamp':
+                    latest_data[col] = datetime.now().isoformat()
+                else:
+                    latest_data[col] = None
+
+        # Ensure volume is integer
+        try:
+            latest_data['volumen'] = int(latest_data['volumen']) if latest_data['volumen'] is not None else 0
+        except (ValueError, TypeError):
+            latest_data['volumen'] = 0
+
+        return latest_data
+
     except Exception as e:
-        logger.error(f"Error cargando datos históricos para {symbol}: {str(e)}")
-        return None
+        logger.error(f"Error getting latest data for {symbol}: {str(e)}", exc_info=True)
+        # Return default values
+        return {
+            "symbol": symbol,
+            "currentPrice": ORIGINAL_PRICES.get(symbol, 0.0),
+            "previousClose": ORIGINAL_PRICES.get(symbol, 0.0),
+            "open": ORIGINAL_PRICES.get(symbol, 0.0),
+            "dayLow": ORIGINAL_PRICES.get(symbol, 0.0) * 0.98,
+            "dayHigh": ORIGINAL_PRICES.get(symbol, 0.0) * 1.02,
+            "dividendYield": 0.0,
+            "financialCurrency": "USD",
+            "volumen": 0,
+            "timestamp": datetime.now().isoformat()
+        }
 
 
 def background_update_all_dataframes():
-    """Actualiza todos los dataframes en segundo plano"""
+    """Updates all dataframes in background with rate limiting"""
     try:
-        symbols = list_available_stocks_internal()
-        for symbol in symbols:
-            load_dataframe(symbol, force_reload=True)
-        logger.info(f"Actualización en segundo plano completada para {len(symbols)} símbolos")
+        symbols = list_available_stocks_from_db()
+        logger.info(f"Starting background update for {len(symbols)} symbols")
+
+        for i, symbol in enumerate(symbols):
+            try:
+                logger.info(f"Updating {symbol} ({i + 1}/{len(symbols)})")
+                # Force reload but also limit to recent data to improve performance
+                load_stock_data_from_db(symbol, force_reload=True, limit=1000)
+                # Add a small delay between updates to avoid overloading the DB
+                time.sleep(1)
+            except Exception as e:
+                logger.error(f"Error updating {symbol}: {str(e)}")
+
+        logger.info(f"Update completed for {len(symbols)} symbols from database")
     except Exception as e:
-        logger.error(f"Error durante la actualización en segundo plano: {str(e)}")
+        logger.error(f"Error during background update: {str(e)}", exc_info=True)
+        PERFORMANCE_METRICS["errors"] += 1
+        PERFORMANCE_METRICS["last_error_time"] = datetime.now().isoformat()
+        PERFORMANCE_METRICS["last_error_message"] = f"Background update error: {str(e)}"
 
 
 def calculate_percentage_change(price_series):
-    """Calcula el cambio porcentual entre el primer y último precio de una serie"""
-    if len(price_series) < 2:
+    """Calculates percentage change between first and last price in series with safety checks"""
+    if len(price_series) < 2 or price_series.isna().all():
         return 0.0
 
-    first_price = price_series.iloc[0]
-    last_price = price_series.iloc[-1]
+    # Get first non-null price
+    first_valid_idx = price_series.first_valid_index()
+    if first_valid_idx is None:
+        return 0.0
+    first_price = price_series.loc[first_valid_idx]
 
-    if first_price == 0:
+    # Get last non-null price
+    last_valid_idx = price_series.last_valid_index()
+    if last_valid_idx is None:
+        return 0.0
+    last_price = price_series.loc[last_valid_idx]
+
+    if first_price == 0 or pd.isna(first_price) or pd.isna(last_price):
         return 0.0
 
     return ((last_price - first_price) / first_price) * 100
 
 
-def list_available_stocks_internal():
-    """Lista todos los símbolos disponibles (versión interna)"""
-    try:
-        root_path = get_project_root()
-        data_dir = os.path.join(root_path, "data")
-        files = [f for f in os.listdir(data_dir) if f.endswith('.csv')]
+def get_date_range_for_period(period: str) -> Tuple[datetime, datetime]:
+    """Gets the date range for a given period with fallbacks for short timeframes"""
+    end_date = datetime.now()
 
-        symbols = []
-        for f in files:
-            if f.startswith('brk-b'):
-                symbols.append("BRK-B")
-            else:
-                base_name = f.split('_')[0].upper()
-                if base_name not in symbols:
-                    symbols.append(base_name)
-        return sorted(symbols)
-    except Exception as e:
-        logger.error(f"Error al listar acciones: {str(e)}")
-        return []
+    # Definir una fecha base para asegurar que capturemos datos desde enero 2025
+    base_date = datetime(2025, 1, 1)
 
+    # Define period mappings
+    periods_map = {
+        "realtime": timedelta(days=1),  # un día para tiempo real
+        "1d": timedelta(days=2),  # dos días para tener datos suficientes
+        "1w": timedelta(weeks=1),  # dos semanas
+        "1m": timedelta(days=35),  # poco más de un mes
+        "3m": timedelta(days=150)  # ampliar a 5 meses para capturar desde enero
+    }
 
-def get_latest_data(symbol: str) -> Dict:
-    """Obtiene los datos más recientes para un símbolo"""
-    df = load_dataframe(symbol)
+    # Si period es "3m" o períodos largos, usar la fecha base (enero 2025)
+    if period in ["3m"]:
+        start_date = base_date
+    else:
+        # Para otros períodos, calcular desde la fecha actual
+        start_date = end_date - periods_map.get(period, timedelta(weeks=1))
 
-    if df is None or df.empty:
-        return None
+        # Validación extra: si la fecha calculada es anterior a la fecha base, usar la fecha base
+        if start_date < base_date:
+            start_date = base_date
 
-    latest_data = df.iloc[-1].to_dict()
-
-    for key, value in latest_data.items():
-        if pd.isna(value):
-            latest_data[key] = None
-
-    latest_data['symbol'] = symbol
-
-    required_columns = ['currentPrice', 'previousClose', 'open', 'dayLow', 'dayHigh',
-                        'dividendYield', 'financialCurrency', 'volumen', 'timestamp']
-
-    for col in required_columns:
-        if col not in latest_data:
-            latest_data[col] = None
-
-    if latest_data['financialCurrency'] is None:
-        latest_data['financialCurrency'] = "USD"
-
-    if latest_data['currentPrice'] is None and symbol in ORIGINAL_PRICES:
-        latest_data['currentPrice'] = ORIGINAL_PRICES[symbol]
-        logger.warning(f"currentPrice is None for {symbol}, using original price {ORIGINAL_PRICES[symbol]} as fallback")
-    elif latest_data['currentPrice'] is None:
-        latest_data['currentPrice'] = 0.0
-        logger.warning(f"currentPrice is None for {symbol} and no original price found, using 0.0 as fallback")
-
-    try:
-        if latest_data['volumen'] is not None:
-            latest_data['volumen'] = int(latest_data['volumen'])
-        else:
-            latest_data['volumen'] = 0
-    except (ValueError, TypeError):
-        latest_data['volumen'] = 0
-
-    return latest_data
+    logger.info(f"Período {period}: fecha inicio {start_date}, fecha fin {end_date}")
+    return start_date, end_date
 
 
-def get_historical_data(symbol: str, days: int = 30) -> List[Dict]:
-    """Obtiene datos históricos para un símbolo"""
-    df = load_dataframe(symbol)
+def filter_dataframe_by_date_range(df: pd.DataFrame, start_date: datetime, end_date: datetime,
+                                   period: str = None) -> pd.DataFrame:
+    """Filters a DataFrame by date range with fallbacks for empty results"""
+    if df.empty:
+        return df
 
-    if df is None or df.empty:
-        return []
-
-    if 'timestamp' in df.columns:
+    # Ensure timestamp is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
         df['timestamp'] = pd.to_datetime(df['timestamp'])
-        df = df.sort_values('timestamp', ascending=False)
 
-    historical_df = df.head(days)
-    records = historical_df.to_dict(orient='records')
+    # First attempt: strict filtering by date range
+    filtered_df = df[(df['timestamp'] >= start_date) & (df['timestamp'] <= end_date)].copy()
 
-    for record in records:
-        for key, value in record.items():
-            if pd.isna(value):
-                record[key] = None
-            elif key == 'timestamp' and isinstance(value, pd.Timestamp):
-                record[key] = value.isoformat()
+    # For realtime period, apply market hours filtering only if we're in market hours
+    if period == "realtime" and filtered_df.empty is False:
+        current_hour = datetime.now().hour
+        if 8 <= current_hour <= 16:
+            market_hours_df = filtered_df[
+                (filtered_df['timestamp'].dt.hour >= 8) &
+                (filtered_df['timestamp'].dt.hour <= 16)
+                ]
+            # Only use market hours filter if it doesn't make the DataFrame empty
+            if not market_hours_df.empty:
+                filtered_df = market_hours_df
 
-    return records
+    # If filtering resulted in empty DataFrame, try with expanded date range
+    if filtered_df.empty and not df.empty:
+        logger.warning(f"Date filtering resulted in empty DataFrame, trying expanded range")
+        expanded_start = start_date - (end_date - start_date)  # Double the range
+        filtered_df = df[(df['timestamp'] >= expanded_start) & (df['timestamp'] <= end_date)].copy()
+
+    # Last resort: if still empty, take the most recent records
+    if filtered_df.empty and not df.empty:
+        logger.warning(f"Expanded date filtering still resulted in empty DataFrame, using most recent data")
+        filtered_df = df.sort_values('timestamp', ascending=False).head(10).sort_values('timestamp')
+
+    return filtered_df
+
+
+def calculate_variation_percentage(df: pd.DataFrame, period: str) -> pd.DataFrame:
+    """Calculates price variation percentage with appropriate method based on period"""
+    if df.empty or 'currentPrice' not in df.columns:
+        return df
+
+    # Make sure currentPrice is numeric
+    df['currentPrice'] = pd.to_numeric(df['currentPrice'], errors='coerce')
+
+    # For realtime, calculate point-to-point percentage change
+    if period == "realtime":
+        df['variation_pct'] = df['currentPrice'].pct_change() * 100
+    # For other periods, calculate percentage change from first valid point
+    else:
+        first_valid_idx = df['currentPrice'].first_valid_index()
+        if first_valid_idx is not None:
+            first_price = df.loc[first_valid_idx, 'currentPrice']
+            if first_price > 0:
+                df['variation_pct'] = ((df['currentPrice'] - first_price) / first_price) * 100
+            else:
+                df['variation_pct'] = 0.0
+        else:
+            df['variation_pct'] = 0.0
+
+    # Clean up any invalid values
+    df['variation_pct'] = df['variation_pct'].replace([np.inf, -np.inf], np.nan).fillna(0)
+
+    return df
 
 
 def clean_json_data(data):
-    """Limpia los datos para asegurar que sean serializables en JSON"""
+    """Cleans data to ensure JSON serializability"""
     if isinstance(data, dict):
         return {k: clean_json_data(v) for k, v in data.items()}
     elif isinstance(data, list):
@@ -547,20 +688,22 @@ def clean_json_data(data):
         return data
 
 
-# ---- CONFIGURACIÓN FASTAPI --------
+# ---- FASTAPI SETUP --------
 # ------------------------------
-
 app = FastAPI(
     title="BVL Live Tracker API",
-    description="API para consultar datos de acciones en tiempo real",
-    version="1.0.0"
+    description="API for real-time stock data from PostgreSQL",
+    version="2.0.0",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json"
 )
 
-# Configuración de archivos estáticos
+# Static files and CORS configuration
 static_dir = os.path.join(os.path.dirname(__file__), 'static')
+os.makedirs(static_dir, exist_ok=True)  # Ensure static directory exists
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-# Configurar CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -570,40 +713,133 @@ app.add_middleware(
 )
 
 
-# ---- ENDPOINTS DE MONITOREO MEJORADOS --------
+# ---- REQUEST LOGGING MIDDLEWARE --------
 # ------------------------------
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Middleware to log requests and capture performance metrics"""
+    PERFORMANCE_METRICS["api_calls"] += 1
 
-@app.get("/monitor/cache")
+    request_id = f"{int(time.time())}-{PERFORMANCE_METRICS['api_calls']}"
+    start_time = time.time()
+    path = request.url.path
+    query_params = dict(request.query_params)
+    client_host = request.client.host if request.client else "unknown"
+
+    logger.info(f"Request {request_id} started: {request.method} {path} from {client_host}")
+
+    try:
+        response = await call_next(request)
+        process_time = time.time() - start_time
+
+        logger.info(
+            f"Request {request_id} completed: {request.method} {path} - "
+            f"Status: {response.status_code} - Time: {process_time:.3f}s"
+        )
+
+        # Add timing header to response
+        response.headers["X-Process-Time"] = str(process_time)
+        return response
+    except Exception as e:
+        process_time = time.time() - start_time
+        logger.error(
+            f"Request {request_id} failed: {request.method} {path} - "
+            f"Error: {str(e)} - Time: {process_time:.3f}s"
+        )
+        PERFORMANCE_METRICS["errors"] += 1
+        PERFORMANCE_METRICS["last_error_time"] = datetime.now().isoformat()
+        PERFORMANCE_METRICS["last_error_message"] = f"Request error: {str(e)}"
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Internal Server Error", "detail": str(e), "path": path}
+        )
+
+
+# ---- ERROR HANDLING --------
+# ------------------------------
+@app.exception_handler(StockAPIException)
+async def stock_api_exception_handler(request: Request, exc: StockAPIException):
+    """Custom exception handler for StockAPIException"""
+    logger.error(f"StockAPIException: {exc.detail} (Code: {exc.code})")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=ErrorResponse(
+            error=exc.detail,
+            code=exc.code,
+            timestamp=exc.timestamp,
+            details=exc.details
+        ).dict()
+    )
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Custom exception handler for HTTPException"""
+    logger.error(f"HTTPException: {exc.detail} (Status: {exc.status_code})")
+    PERFORMANCE_METRICS["errors"] += 1
+    PERFORMANCE_METRICS["last_error_time"] = datetime.now().isoformat()
+    PERFORMANCE_METRICS["last_error_message"] = f"HTTP Exception: {exc.detail}"
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=ErrorResponse(
+            error=exc.detail,
+            code=f"HTTP_{exc.status_code}",
+           timestamp=datetime.now().isoformat(),
+            details={}
+        ).dict()
+    )
+
+
+def general_exception_handler(request: Request, exc: Exception):
+    """General exception handler for all unhandled exceptions"""
+    logger.error(f"Unhandled exception: {str(exc)}", exc_info=True)
+    PERFORMANCE_METRICS["errors"] += 1
+    PERFORMANCE_METRICS["last_error_time"] = datetime.now().isoformat()
+    PERFORMANCE_METRICS["last_error_message"] = f"Unhandled exception: {str(exc)}"
+    return JSONResponse(
+        status_code=500,
+        content=ErrorResponse(
+            error="Internal Server Error",
+            code="INTERNAL_ERROR",
+            timestamp=datetime.now().isoformat(),
+            details={"exception": str(exc), "type": str(type(exc).__name__)}
+        ).dict()
+    )
+
+
+# ---- MONITORING ENDPOINTS --------
+# ------------------------------
+@app.get("/monitor/cache", tags=["Monitoring"])
 def monitor_cache():
-    """Endpoint para monitorear el estado de la caché"""
+    """Endpoint to monitor cache status"""
     with cache_lock:
         cache_info = {
             "total_items": len(dataframes_cache),
-            "total_size": f"{cache_size / 1024:.2f} KB",
+            "total_size_kb": f"{cache_size / 1024:.2f}",
             "max_size": MAX_CACHE_SIZE,
-            "item_ttl": CACHE_ITEM_TTL,
+            "item_ttl_seconds": CACHE_ITEM_TTL,
             "items": []
         }
 
         for symbol, item in dataframes_cache.items():
             cache_info["items"].append({
                 "symbol": symbol,
-                "size": f"{item.size / 1024:.2f} KB",
+                "size_kb": f"{item.size / 1024:.2f}",
                 "last_access": item.last_load_time.isoformat(),
                 "access_count": item.access_count,
-                "age_seconds": (datetime.now() - item.last_load_time).total_seconds()
+                "age_seconds": (datetime.now() - item.last_load_time).total_seconds(),
+                "records": len(item.df) if item.df is not None else 0
             })
 
     return cache_info
 
 
-@app.get("/monitor/logs")
+@app.get("/monitor/logs", tags=["Monitoring"])
 def monitor_logs(lines: int = 100):
-    """Endpoint para ver los logs recientes"""
+    """Endpoint to view recent logs"""
     log_file = os.path.join(log_dir, 'api.log')
 
     if not os.path.exists(log_file):
-        raise HTTPException(status_code=404, detail="Archivo de log no encontrado")
+        raise HTTPException(status_code=404, detail="Log file not found")
 
     try:
         with open(log_file, 'r', encoding='utf-8') as f:
@@ -612,354 +848,221 @@ def monitor_logs(lines: int = 100):
 
         return HTMLResponse(content="<pre>" + "".join(recent_lines) + "</pre>")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error al leer logs: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error reading logs: {str(e)}")
 
 
-# ---- ENDPOINTS PRINCIPALES --------
-# ------------------------------
+@app.get("/monitor/database", tags=["Monitoring"])
+def monitor_database():
+    """Endpoint to monitor database status and table statistics"""
+    try:
+        stats = {}
 
-@app.get("/")
-def read_root():
-    return {"message": "BVL Live Tracker API v1.0"}
-
-
-@app.get("/stocks", response_model=List[str])
-def list_available_stocks():
-    """Lista todos los símbolos disponibles"""
-    symbols = list_available_stocks_internal()
-    if not symbols:
-        raise HTTPException(status_code=500, detail="Error al obtener la lista de acciones")
-    return symbols
-
-
-@app.get("/stocks/{symbol}", response_model=StockData)
-def get_stock_data(symbol: str):
-    """Obtiene los datos más recientes para un símbolo específico"""
-    available_symbols = list_available_stocks_internal()
-    if symbol.upper() not in available_symbols:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Símbolo no válido. Opciones disponibles: {', '.join(available_symbols)}"
-        )
-
-    data = get_latest_data(symbol)
-    if data is None:
-        raise HTTPException(status_code=404, detail=f"Datos no encontrados para {symbol}")
-
-    data = clean_json_data(data)
-    return data
-
-
-@app.get("/stocks/{symbol}/history")
-def get_stock_history(symbol: str, days: int = 30):
-    """Obtiene el historial de datos para un símbolo"""
-    data = get_historical_data(symbol, days)
-
-    if not data:
-        raise HTTPException(status_code=404, detail=f"Datos históricos no encontrados para {symbol}")
-
-    data = clean_json_data(data)
-    return data
-
-
-@app.get("/stocks/{symbol}/chart/{field}")
-def get_stock_chart(symbol: str, field: str, days: int = 30):
-    """Genera datos para un gráfico de un campo específico"""
-    valid_fields = ['currentPrice', 'previousClose', 'open', 'dayLow', 'dayHigh',
-                    'dividendYield', 'volume']
-
-    if field not in valid_fields:
-        raise HTTPException(status_code=400, detail=f"Campo inválido. Opciones: {', '.join(valid_fields)}")
-
-    data = get_historical_data(symbol, days)
-
-    if not data:
-        raise HTTPException(status_code=404, detail=f"Datos históricos no encontrados para {symbol}")
-
-    chart_data = []
-    for item in data:
-        if item.get(field) is not None:
-            chart_data.append({"timestamp": item["timestamp"], field: item.get(field)})
-
-    chart_data.sort(key=lambda x: x["timestamp"] if x["timestamp"] is not None else "")
-    return chart_data
-
-
-@app.get("/compare")
-def compare_stocks(symbols: str, field: str = "currentPrice", days: int = 30):
-    """Compara múltiples símbolos en un campo específico"""
-    symbol_list = symbols.split(",")
-    valid_fields = ['currentPrice', 'previousClose', 'open', 'dayLow', 'dayHigh',
-                    'dividendYield', 'volumen']
-
-    if field not in valid_fields:
-        raise HTTPException(status_code=400, detail=f"Campo inválido. Opciones: {', '.join(valid_fields)}")
-
-    comparison_data = {}
-
-    for symbol in symbol_list:
-        data = get_historical_data(symbol, days)
-        if data:
-            symbol_data = []
-            for item in data:
-                if item.get(field) is not None:
-                    symbol_data.append({"timestamp": item["timestamp"], field: item.get(field)})
-
-            symbol_data.sort(key=lambda x: x["timestamp"] if x["timestamp"] is not None else "")
-            comparison_data[symbol] = symbol_data
-
-    if not comparison_data:
-        raise HTTPException(status_code=404, detail="No se encontraron datos para comparar")
-
-    comparison_data = clean_json_data(comparison_data)
-    return comparison_data
-
-
-@app.get("/portfolio/profitability", response_model=List[ProfitabilityData])
-def get_portfolio_profitability():
-    """Calcula la rentabilidad del portafolio basado en precios originales y actuales"""
-    result = []
-
-    symbol_names = {
-        "BAP": "Credicorp",
-        "BRK-B": "Berkshire Hathaway B",
-        "ILF": "iShares Latin America 40 ETF"
-    }
-
-    for symbol, original_price in ORIGINAL_PRICES.items():
-        current_data = get_latest_data(symbol)
-
-        if current_data is None or current_data.get('currentPrice') is None:
-            current_price = original_price
-            profitability = 0.0
-        else:
-            current_price = current_data.get('currentPrice')
-            profitability = ((current_price - original_price) / original_price) * 100
-
-        result.append({
-            "symbol": symbol,
-            "name": symbol_names.get(symbol, symbol),
-            "original_price": original_price,
-            "current_price": current_price,
-            "profitability_percentage": round(profitability, 2)
-        })
-
-    return result
-
-
-@app.get("/portfolio/profitability/{symbol}", response_model=ProfitabilityData)
-def get_symbol_profitability(symbol: str):
-    """Calcula la rentabilidad para un símbolo específico"""
-    if symbol not in ORIGINAL_PRICES:
-        raise HTTPException(status_code=404, detail=f"No hay precio original registrado para {symbol}")
-
-    original_price = ORIGINAL_PRICES[symbol]
-    current_data = get_latest_data(symbol)
-
-    if current_data is None:
-        raise HTTPException(status_code=404, detail=f"No se encontraron datos actuales para {symbol}")
-
-    current_price = current_data.get('currentPrice')
-    if current_price is None:
-        raise HTTPException(status_code=500, detail=f"No hay precio actual disponible para {symbol}")
-
-    profitability = ((current_price - original_price) / original_price) * 100
-
-    symbol_names = {
-        "BAP": "Credicorp",
-        "BRK-B": "Berkshire Hathaway B",
-        "ILF": "iShares Latin America 40 ETF"
-    }
-
-    return {
-        "symbol": symbol,
-        "name": symbol_names.get(symbol, symbol),
-        "original_price": original_price,
-        "current_price": current_price,
-        "profitability_percentage": round(profitability, 2)
-    }
-
-
-@app.get("/api/timeseries", response_model=TimeSeriesResponse)
-async def get_time_series(
-        symbol: str = Query("BAP", description="Símbolo a consultar (BAP, BRK-B, ILF)"),
-        period: str = Query("1w", description="Periodo (1d, 1w, 1m, 3m)"),
-        compare_all: bool = Query(False, description="Mostrar todos los símbolos juntos")
-):
-    """Obtiene series temporales para diferentes periodos"""
-    periods_map = {
-        "1d": timedelta(days=1),
-        "1w": timedelta(weeks=1),
-        "1m": timedelta(days=30),
-        "3m": timedelta(days=90)
-    }
-
-    symbols_to_fetch = ["BAP", "BRK-B", "ILF"] if compare_all else [symbol]
-    end_date = datetime.now()
-
-    result = []
-
-    for sym in symbols_to_fetch:
+        # Check database connectivity
         try:
-            df = load_dataframe(sym)
-            if df is None or df.empty:
-                continue
-
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-            start_date = end_date - periods_map[period]
-
-            filtered_df = df[(df['timestamp'] >= start_date) & (df['timestamp'] <= end_date)]
-            filtered_df = filtered_df.sort_values('timestamp')
-
-            series_data = [
-                TimeSeriesPoint(
-                    timestamp=row['timestamp'].isoformat(),
-                    price=float(row['currentPrice'])
-                )
-                for _, row in filtered_df.iterrows()
-                if pd.notna(row['currentPrice'])
-            ]
-
-            result.append(SymbolTimeSeries(
-                symbol=sym,
-                data=series_data,
-                period=period
-            ))
-
+            conn = get_db_connection()
+            conn.close()
+            stats["connection"] = "OK"
         except Exception as e:
-            logger.error(f"Error procesando {sym}: {str(e)}")
+            stats["connection"] = f"Error: {str(e)}"
+            return stats
 
-    return TimeSeriesResponse(series=result)
+        # Get table statistics
+        try:
+            query = """
+                    SELECT COUNT(*)               as total_rows, \
+                           MIN(timestamp)         as oldest_record, \
+                           MAX(timestamp)         as newest_record, \
+                           COUNT(DISTINCT symbol) as distinct_symbols
+                    FROM stock_data \
+                    """
+            result = execute_query(query, use_dict_cursor=True)
+            if result:
+                stats["stock_data"] = result[0]
+                # Format timestamps for readability
+                if stats["stock_data"]["oldest_record"]:
+                    stats["stock_data"]["oldest_record"] = stats["stock_data"]["oldest_record"].isoformat()
+                if stats["stock_data"]["newest_record"]:
+                    stats["stock_data"]["newest_record"] = stats["stock_data"]["newest_record"].isoformat()
+        except Exception as e:
+            stats["stock_data_stats_error"] = str(e)
+
+        # Get count by symbol
+        try:
+            query = """
+                    SELECT symbol, \
+                           COUNT(*)       as record_count, \
+                           MIN(timestamp) as oldest, \
+                           MAX(timestamp) as newest
+                    FROM stock_data
+                    GROUP BY symbol
+                    ORDER BY symbol \
+                    """
+            result = execute_query(query, use_dict_cursor=True)
+            if result:
+                stats["symbols"] = []
+                for row in result:
+                    if row["oldest"]:
+                        row["oldest"] = row["oldest"].isoformat()
+                    if row["newest"]:
+                        row["newest"] = row["newest"].isoformat()
+                    stats["symbols"].append(row)
+        except Exception as e:
+            stats["symbols_stats_error"] = str(e)
+
+        # Get latest 10 records for quick overview
+        try:
+            query = """
+                    SELECT symbol, timestamp, current_price
+                    FROM stock_data
+                    ORDER BY timestamp DESC
+                        LIMIT 10 \
+                    """
+            result = execute_query(query, use_dict_cursor=True)
+            if result:
+                stats["recent_records"] = []
+                for row in result:
+                    if row["timestamp"]:
+                        row["timestamp"] = row["timestamp"].isoformat()
+                    stats["recent_records"].append(row)
+        except Exception as e:
+            stats["recent_records_error"] = str(e)
+
+        return stats
+
+    except Exception as e:
+        logger.error(f"Error in database monitor: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error monitoring database: {str(e)}")
 
 
-@app.get("/api/timeseries-with-profitability", response_model=TimeSeriesResponse)
+@app.get("/monitor/metrics", tags=["Monitoring"])
+def monitor_metrics():
+    """Endpoint to view performance metrics"""
+    # Add current stats
+    current_metrics = PERFORMANCE_METRICS.copy()
+    current_metrics["uptime_seconds"] = (datetime.now() - startup_time).total_seconds()
+    current_metrics["cache_size"] = len(dataframes_cache)
+    current_metrics["memory_usage_mb"] = cache_size / (1024 * 1024)
+
+    # Avoid division by zero
+    cache_hits = current_metrics["cache_hits"]
+    cache_misses = current_metrics["cache_misses"]
+    total_cache_access = cache_hits + cache_misses
+
+    current_metrics["cache_hit_ratio"] = (
+        cache_hits / total_cache_access if total_cache_access > 0 else 0
+    )
+
+    return current_metrics
+
+
+# ---- MAIN ENDPOINTS --------
+# ------------------------------
+@app.get("/api/timeseries-with-profitability", response_model=TimeSeriesResponse, tags=["Data"])
 async def get_time_series_with_profitability(
-        symbol: str = Query("BAP", description="Símbolo a consultar (BAP, BRK-B, ILF)"),
-        period: str = Query("1w", description="Periodo (realtime, 1d, 1w, 1m, 3m)"),
-        compare_all: bool = Query(False, description="Mostrar todos los símbolos juntos")
+        symbol: str = Query("BAP", description="Symbol to query (BAP, BRK-B, ILF)"),
+        period: str = Query("1w", description="Period (realtime, 1d, 1w, 1m, 3m)"),
+        compare_all: bool = Query(False, description="Show all symbols together")
 ):
-    """Obtiene series temporales con información de rentabilidad, volumen y PE Ratio"""
-    periods_map = {
-        "realtime": timedelta(days=1),
-        "1d": timedelta(days=1),
-        "1w": timedelta(weeks=1),
-        "1m": timedelta(days=30),
-        "3m": timedelta(days=90)
-    }
+    """Gets time series with profitability information"""
+    symbols_to_fetch = list_available_stocks_from_db() if compare_all else [symbol]
+    start_date, end_date = get_date_range_for_period(period)
 
-    symbols_to_fetch = ["BAP", "BRK-B", "ILF"] if compare_all else [symbol]
-    end_date = datetime.now()
-    transition_date = datetime(2025, 4, 5)
-
-    logger.info(f"Procesando símbolos: {symbols_to_fetch}, período: {period}")
+    logger.info(f"Processing symbols: {symbols_to_fetch}, period: {period}, date range: {start_date} to {end_date}")
     result = []
 
     for sym in symbols_to_fetch:
         try:
-            current_df = load_dataframe(sym)
-            if current_df is None:
-                current_df = pd.DataFrame()
+            # Modificada para tomar toda la información disponible si es 3m
+            query = """
+                    SELECT symbol, timestamp, current_price as "currentPrice", previous_close as "previousClose", open, day_low as "dayLow", day_high as "dayHigh", dividend_yield as "dividendYield", volume as "volumen", fifty_two_week_range as "fiftyTwoWeekRange", market_cap as "marketCap", trailing_pe as "trailingPE"
+                    FROM stock_data
+                    WHERE symbol = %s
+                      AND timestamp BETWEEN %s \
+                      AND %s
+                    ORDER BY timestamp \
+                    """
 
-            hist_df = load_historical_data(sym)
+            # Para debug: contar cuántos registros hay para el período
+            count_query = """
+                          SELECT COUNT(*)
+                          FROM stock_data
+                          WHERE symbol = %s
+                            AND timestamp BETWEEN %s \
+                            AND %s \
+                          """
+            count_result = execute_query(count_query, (sym, start_date, end_date))
+            record_count = count_result[0][0] if count_result and count_result[0] else 0
+            logger.info(f"Symbol {sym}, período {period}: encontrados {record_count} registros en DB")
 
-            if hist_df is not None:
-                hist_df = hist_df[hist_df['timestamp'] < transition_date]
-                logger.info(f"Datos históricos para {sym}: {len(hist_df)} registros")
+            db_data = execute_query(query, (sym, start_date, end_date), use_dict_cursor=True)
 
-            if not current_df.empty:
-                current_df = current_df[current_df['timestamp'] >= transition_date]
-                logger.info(f"Datos actuales para {sym}: {len(current_df)} registros")
-
-            combined_df = pd.concat([hist_df, current_df], ignore_index=True) if hist_df is not None else current_df
-
-            if combined_df.empty:
-                logger.warning(f"No hay datos combinados para {sym}")
+            if not db_data:
+                logger.warning(f"No data available for {sym} in database for the specified period")
                 continue
 
-            if period == "realtime":
-                today = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
-                filtered_df = combined_df[(combined_df['timestamp'] >= today) &
-                                          (combined_df['timestamp'] <= end_date)]
-                filtered_df = filtered_df[
-                    (filtered_df['timestamp'].dt.hour >= 8) &
-                    (filtered_df['timestamp'].dt.hour <= 16)
-                    ]
-            else:
-                start_date = end_date - periods_map[period]
-                filtered_df = combined_df[(combined_df['timestamp'] >= start_date) &
-                                          (combined_df['timestamp'] <= end_date)]
-
-            filtered_df = filtered_df.sort_values('timestamp')
-
-            logger.info(f"Datos filtrados para {sym} ({period}): {len(filtered_df)} registros")
-
-            if filtered_df.empty:
-                logger.warning(f"No hay datos para {sym} en el período {period}")
-                continue
-
+            # Get the latest data for additional metrics
             last_current_data = get_latest_data(sym) or {}
 
+            # Create time series points
             series_data = []
-            for _, row in filtered_df.iterrows():
-                if pd.notna(row['currentPrice']):
-                    volume_value = (
-                        float(row['volumen'])
-                        if 'volumen' in row and pd.notna(row['volumen'])
-                        else None
-                    )
+            for row in db_data:
+                # Make timestamp a proper string if it's a datetime object
+                if isinstance(row['timestamp'], datetime):
+                    row['timestamp'] = row['timestamp'].isoformat()
 
+                # Ensure values are the right type
+                price = float(row['currentPrice']) if row.get('currentPrice') is not None else None
+                volume = float(row.get('volumen', 0)) if row.get('volumen') is not None else None
+                day_open = float(row.get('open', 0)) if row.get('open') is not None else None
+                day_low = float(row.get('dayLow', 0)) if row.get('dayLow') is not None else None
+                day_high = float(row.get('dayHigh', 0)) if row.get('dayHigh') is not None else None
+
+                if price is not None:
                     point = TimeSeriesPoint(
-                        timestamp=row['timestamp'].isoformat(),
-                        price=float(row['currentPrice']),
-                        volume=volume_value,
-                        open=(
-                            float(row['open'])
-                            if 'open' in row and pd.notna(row['open'])
-                            else None
-                        ),
-                        day_low=(
-                            float(row['dayLow'])
-                            if 'dayLow' in row and pd.notna(row['dayLow'])
-                            else None
-                        ),
-                        day_high=(
-                            float(row['dayHigh'])
-                            if 'dayHigh' in row and pd.notna(row['dayHigh'])
-                            else None
-                        )
+                        timestamp=row['timestamp'],
+                        price=price,
+                        volume=volume,
+                        open=day_open,
+                        day_low=day_low,
+                        day_high=day_high
                     )
                     series_data.append(point)
 
-            original_price = ORIGINAL_PRICES.get(sym)
-            last_price = filtered_df['currentPrice'].iloc[-1] if not filtered_df.empty else None
+            if not series_data:
+                logger.warning(f"No valid data points for {sym}")
+                continue
 
+            # Get key metrics
+            original_price = ORIGINAL_PRICES.get(sym)
+            last_price = series_data[-1].price if series_data else None
+            profitability = None
+            if last_price and original_price and original_price > 0:
+                profitability = ((last_price - original_price) / original_price) * 100
+
+            # Create the series object
             symbol_series = SymbolTimeSeries(
                 symbol=sym,
                 data=series_data,
                 period=period,
                 original_price=original_price,
                 current_price=last_price,
-                current_profitability=(
-                    ((last_price - original_price) / original_price) * 100
-                    if last_price and original_price and original_price > 0
-                    else None
-                ),
+                current_profitability=profitability,
                 market_cap=(
                     float(last_current_data['marketCap'])
                     if last_current_data and 'marketCap' in last_current_data
-                       and pd.notna(last_current_data['marketCap'])
+                       and last_current_data['marketCap'] is not None
                     else None
                 ),
                 trailing_pe=(
                     float(last_current_data['trailingPE'])
                     if last_current_data and 'trailingPE' in last_current_data
-                       and pd.notna(last_current_data['trailingPE'])
+                       and last_current_data['trailingPE'] is not None
                     else None
                 ),
                 dividend_yield=(
                     float(last_current_data['dividendYield'])
                     if last_current_data and 'dividendYield' in last_current_data
-                       and pd.notna(last_current_data['dividendYield'])
+                       and last_current_data['dividendYield'] is not None
                     else None
                 ),
                 fifty_two_week_range=(
@@ -969,144 +1072,163 @@ async def get_time_series_with_profitability(
             result.append(symbol_series)
 
         except Exception as e:
-            logger.error(f"Error procesando {sym}: {str(e)}", exc_info=True)
+            logger.error(f"Error processing {sym}: {str(e)}", exc_info=True)
+
+    # If no data was found, return a helpful error
+    if not result:
+        raise StockAPIException(
+            status_code=404,
+            detail=f"No data found for the requested symbols and period",
+            code="NO_DATA_FOUND"
+        )
 
     return TimeSeriesResponse(series=result)
 
-@app.get("/api/timeseries-variations", response_model=TimeSeriesResponse)
+
+@app.get("/api/timeseries-variations", response_model=TimeSeriesResponse, tags=["Data"])
 async def get_time_series_variations(
-        symbol: str = Query("BAP", description="Símbolo a consultar (BAP, BRK-B, ILF)"),
-        period: str = Query("1w", description="Periodo (realtime, 1d, 1w, 1m, 3m)"),
-        compare_all: bool = Query(False, description="Mostrar todos los símbolos juntos")
+        symbol: str = Query("BAP", description="Symbol to query (BAP, BRK-B, ILF)"),
+        period: str = Query("1w", description="Period (realtime, 1d, 1w, 1m, 3m)"),
+        compare_all: bool = Query(False, description="Show all symbols together")
 ):
-    """Obtiene series temporales con información de variación porcentual entre precios"""
-    periods_map = {
-        "realtime": timedelta(hours=6),  # Últimas 6 horas para tiempo real
-        "1d": timedelta(days=1),
-        "1w": timedelta(weeks=1),
-        "1m": timedelta(days=30),
-        "3m": timedelta(days=90)
-    }
+    """Gets time series with price variation information"""
+    symbols_to_fetch = list_available_stocks_from_db() if compare_all else [symbol]
+    start_date, end_date = get_date_range_for_period(period)
 
-    symbols_to_fetch = ["BAP", "BRK-B", "ILF"] if compare_all else [symbol]
-    end_date = datetime.now()
-    transition_date = datetime(2025, 4, 5)  # Fecha de transición
-
-    logger.info(f"Procesando símbolos: {symbols_to_fetch}, período: {period}")
+    logger.info(
+        f"Processing symbols for variations: {symbols_to_fetch}, period: {period}, date range: {start_date} to {end_date}")
     result = []
 
     for sym in symbols_to_fetch:
         try:
-            # Cargar datos con manejo seguro de DataFrames
-            current_df = load_dataframe(sym)
-            current_df = pd.DataFrame() if current_df is None or current_df.empty else current_df
+            # Get data directly from the database for the specified time range
+            query = """
+                    SELECT symbol, timestamp, current_price as "currentPrice", previous_close as "previousClose", open, day_low as "dayLow", day_high as "dayHigh", dividend_yield as "dividendYield", volume as "volumen", fifty_two_week_range as "fiftyTwoWeekRange", market_cap as "marketCap", trailing_pe as "trailingPE"
+                    FROM stock_data
+                    WHERE symbol = %s
+                      AND timestamp BETWEEN %s \
+                      AND %s
+                    ORDER BY timestamp \
+                    """
 
-            hist_df = load_historical_data(sym)
-            hist_df = pd.DataFrame() if hist_df is None or hist_df.empty else hist_df
+            # Para debug: contar cuántos registros hay para el período
+            count_query = """
+                          SELECT COUNT(*)
+                          FROM stock_data
+                          WHERE symbol = %s
+                            AND timestamp BETWEEN %s \
+                            AND %s \
+                          """
+            count_result = execute_query(count_query, (sym, start_date, end_date))
+            record_count = count_result[0][0] if count_result and count_result[0] else 0
+            logger.info(f"Symbol {sym}, período {period}: encontrados {record_count} registros en DB (variations)")
 
-            # Filtrar y combinar datasets
-            hist_df = hist_df[hist_df['timestamp'] < transition_date] if not hist_df.empty else hist_df
-            current_df = current_df[current_df['timestamp'] >= transition_date] if not current_df.empty else current_df
+            db_data = execute_query(query, (sym, start_date, end_date), use_dict_cursor=True)
 
-            # Combinar ambos datasets
-            combined_df = pd.concat([hist_df, current_df], ignore_index=True)
-
-            if combined_df.empty:
-                logger.warning(f"No hay datos combinados para {sym}")
+            if not db_data:
+                logger.warning(f"No data available for {sym} in database for the specified period")
                 continue
 
-            # Filtrar por período
-            start_date = end_date - periods_map[period]
-            filtered_df = combined_df[
-                (combined_df['timestamp'] >= start_date) &
-                (combined_df['timestamp'] <= end_date)
-                ].copy()  # Usar copy() para evitar SettingWithCopyWarning
+            # Convert DB data to DataFrame to calculate variations
+            df = pd.DataFrame(db_data)
 
-            # Filtro adicional para tiempo real
+            # Ensure currentPrice is numeric
+            df['currentPrice'] = pd.to_numeric(df['currentPrice'], errors='coerce')
+
+            # Calculate variations based on period
             if period == "realtime":
-                market_open = end_date.replace(hour=8, minute=0, second=0, microsecond=0)
-                market_close = end_date.replace(hour=16, minute=0, second=0, microsecond=0)
-                filtered_df = filtered_df[
-                    (filtered_df['timestamp'] >= market_open) &
-                    (filtered_df['timestamp'] <= market_close)
-                    ]
-
-            if filtered_df.empty:
-                logger.warning(f"No hay datos para {sym} en el período {period}")
-                continue
-
-            # Procesamiento de datos numéricos
-            numeric_cols = ['currentPrice', 'open', 'dayLow', 'dayHigh', 'volumen', 'previousClose']
-            for col in numeric_cols:
-                if col in filtered_df.columns:
-                    filtered_df[col] = pd.to_numeric(filtered_df[col], errors='coerce')
-
-            # Calcular variaciones
-            if period == "realtime":
-                # Variación punto a punto para tiempo real
-                filtered_df['variation_pct'] = filtered_df['currentPrice'].pct_change() * 100
+                df['variation_pct'] = df['currentPrice'].pct_change() * 100
             else:
-                # Variación respecto al primer punto para otros períodos
-                first_valid_price = filtered_df['currentPrice'].first_valid_index()
-                if first_valid_price is not None:
-                    first_price = filtered_df.loc[first_valid_price, 'currentPrice']
-                    filtered_df['variation_pct'] = ((filtered_df['currentPrice'] - first_price) / first_price) * 100
+                # Calculate from first valid price
+                first_price = df['currentPrice'].iloc[0] if not df.empty else None
+                if first_price and first_price > 0:
+                    df['variation_pct'] = ((df['currentPrice'] - first_price) / first_price) * 100
                 else:
-                    filtered_df['variation_pct'] = 0.0
+                    df['variation_pct'] = 0.0
 
-            # Rellenar NaN con 0 y manejar infinitos
-            filtered_df['variation_pct'] = filtered_df['variation_pct'].replace([np.inf, -np.inf], np.nan).fillna(0)
+            # Clean variations
+            df['variation_pct'] = df['variation_pct'].replace([np.inf, -np.inf], np.nan).fillna(0)
 
-            # Obtener metadatos
+            # Convert back to dict
+            db_data = df.to_dict('records')
+
+            # Get the latest data for additional metrics
             last_current_data = get_latest_data(sym) or {}
 
-            # Construir respuesta
+            # Create time series points
             series_data = []
-            for _, row in filtered_df.iterrows():
+            current_price = None
+            for row in db_data:
+                # Make timestamp a proper string if it's a datetime object
+                if isinstance(row['timestamp'], datetime):
+                    row['timestamp'] = row['timestamp'].isoformat()
+
+                # Keep track of current price for profitability calculation
+                if 'currentPrice' in row and row['currentPrice'] is not None:
+                    current_price = float(row['currentPrice'])
+
+                # Get variation
+                variation = float(row.get('variation_pct', 0)) if row.get('variation_pct') is not None else 0
+
+                # Ensure values are the right type
+                volume = float(row.get('volumen', 0)) if row.get('volumen') is not None else None
+                day_open = float(row.get('open', 0)) if row.get('open') is not None else None
+                day_low = float(row.get('dayLow', 0)) if row.get('dayLow') is not None else None
+                day_high = float(row.get('dayHigh', 0)) if row.get('dayHigh') is not None else None
+                prev_close = float(row.get('previousClose', 0)) if row.get('previousClose') is not None else None
+
                 point = TimeSeriesPoint(
-                    timestamp=row['timestamp'].isoformat(),
-                    price=float(row['variation_pct']),
-                    volume=float(row['volumen']) if pd.notna(row.get('volumen')) else None,
-                    open=float(row['open']) if pd.notna(row.get('open')) else None,
-                    day_low=float(row['dayLow']) if pd.notna(row.get('dayLow')) else None,
-                    day_high=float(row['dayHigh']) if pd.notna(row.get('dayHigh')) else None,
-                    previous_close=float(row['previousClose']) if pd.notna(row.get('previousClose')) else None
+                    timestamp=row['timestamp'],
+                    price=variation,  # For variation endpoint, price is the variation percentage
+                    volume=volume,
+                    open=day_open,
+                    day_low=day_low,
+                    day_high=day_high,
+                    previous_close=prev_close
                 )
                 series_data.append(point)
 
-            # Calcular métricas adicionales
+            if not series_data:
+                logger.warning(f"No valid data points for {sym}")
+                continue
+
+            # Get key metrics
             original_price = ORIGINAL_PRICES.get(sym)
-            last_price = filtered_df['currentPrice'].iloc[
-                -1] if not filtered_df.empty and 'currentPrice' in filtered_df.columns else None
-            last_variation = filtered_df['variation_pct'].iloc[-1] if not filtered_df.empty else 0.0
+            last_variation = series_data[-1].price if series_data else 0.0
 
-            # Calcular volatilidad (desviación estándar de las variaciones)
-            volatility = filtered_df['variation_pct'].std() if len(filtered_df) > 1 else 0
+            # Calculate volatility (standard deviation of variations)
+            variation_values = [point.price for point in series_data]
+            volatility = float(np.std(variation_values)) if len(variation_values) > 1 else 0
 
+            # Calculate profitability
+            profitability = None
+            if current_price and original_price and original_price > 0:
+                profitability = ((current_price - original_price) / original_price) * 100
+
+            # Create the series object
             symbol_series = SymbolTimeSeries(
                 symbol=sym,
                 data=series_data,
                 period=period,
                 original_price=original_price,
-                current_price=last_price,
-                current_profitability=(
-                    ((last_price - original_price) / original_price) * 100
-                    if last_price and original_price and original_price > 0
-                    else None
-                ),
+                current_price=current_price,
+                current_profitability=profitability,
                 market_cap=(
                     float(last_current_data.get('marketCap'))
-                    if last_current_data and pd.notna(last_current_data.get('marketCap'))
+                    if last_current_data and 'marketCap' in last_current_data
+                       and last_current_data['marketCap'] is not None
                     else None
                 ),
                 trailing_pe=(
                     float(last_current_data.get('trailingPE'))
-                    if last_current_data and pd.notna(last_current_data.get('trailingPE'))
+                    if last_current_data and 'trailingPE' in last_current_data
+                       and last_current_data['trailingPE'] is not None
                     else None
                 ),
                 dividend_yield=(
                     float(last_current_data.get('dividendYield'))
-                    if last_current_data and pd.notna(last_current_data.get('dividendYield'))
+                    if last_current_data and 'dividendYield' in last_current_data
+                       and last_current_data['dividendYield'] is not None
                     else None
                 ),
                 fifty_two_week_range=last_current_data.get('fiftyTwoWeekRange'),
@@ -1116,20 +1238,23 @@ async def get_time_series_variations(
             result.append(symbol_series)
 
         except Exception as e:
-            logger.error(f"Error procesando {sym}: {str(e)}", exc_info=True)
+            logger.error(f"Error processing {sym}: {str(e)}", exc_info=True)
             continue
+
+    # If no data was found, return a helpful error
+    if not result:
+        raise StockAPIException(
+            status_code=404,
+            detail=f"No data found for the requested symbols and period",
+            code="NO_DATA_FOUND"
+        )
 
     return TimeSeriesResponse(series=result)
 
-@app.get("/portfolio/holdings/live", response_model=PortfolioHoldings)
-def get_portfolio_holdings_live():
-    """
-    Obtiene los datos de la cartera en tiempo real, calculando los valores con los datos más recientes.
-    Utiliza información fija de cantidad de acciones y precios de compra.
 
-    Returns:
-        PortfolioHoldings: Objeto con información completa de la cartera
-    """
+@app.get("/portfolio/holdings/live", response_model=PortfolioHoldings, tags=["Portfolio"])
+def get_portfolio_holdings_live():
+    """Gets real-time portfolio holdings data"""
     holdings = []
     portfolio_total_value = 0
     portfolio_todays_change_value = 0
@@ -1137,70 +1262,74 @@ def get_portfolio_holdings_live():
     portfolio_previous_value = 0
 
     for symbol, data in PORTFOLIO_DATA.items():
-        # Obtener datos actuales del símbolo
-        current_data = get_latest_data(symbol)
+        try:
+            current_data = get_latest_data(symbol)
 
-        if current_data is None:
-            logger.error(f"No se encontraron datos para {symbol}")
-            continue
+            if current_data is None:
+                logger.error(f"No data found for {symbol}")
+                continue
 
-        # Extraer valores necesarios con manejo de errores
-        current_price = current_data.get('currentPrice')
-        previous_close = current_data.get('previousClose')
+            current_price = current_data.get('currentPrice')
+            previous_close = current_data.get('previousClose')
 
-        # Si no hay previous_close, usar un valor estimado para evitar errores
-        if previous_close is None and current_price is not None:
-            logger.warning(f"Sin datos de cierre previo para {symbol}, usando precio actual")
-            previous_close = current_price
+            if previous_close is None and current_price is not None:
+                logger.warning(f"No previous close data for {symbol}, using current price")
+                previous_close = current_price
 
-        if current_price is None:
-            logger.error(f"Sin precio actual para {symbol}")
-            continue
+            if current_price is None:
+                logger.error(f"No current price for {symbol}")
+                continue
 
-        # Valores del portfolio para este símbolo
-        purchase_price = data["purchase_price"]
-        qty = data["qty"]
+            purchase_price = data["purchase_price"]
+            qty = data["qty"]
 
-        # Calcular el cambio diario
-        todays_change = current_price - previous_close
-        todays_change_percent = (todays_change / previous_close) * 100 if previous_close > 0 else 0
+            todays_change = current_price - previous_close
+            todays_change_percent = (todays_change / previous_close) * 100 if previous_close > 0 else 0
 
-        # Calcular el valor total actual
-        total_value = current_price * qty
+            total_value = current_price * qty
+            total_gain_loss = total_value - (purchase_price * qty)
+            total_gain_loss_percent = (total_gain_loss / (purchase_price * qty)) * 100 if purchase_price > 0 else 0
 
-        # Calcular la ganancia/pérdida total
-        total_gain_loss = total_value - (purchase_price * qty)
-        total_gain_loss_percent = (total_gain_loss / (purchase_price * qty)) * 100 if purchase_price > 0 else 0
+            portfolio_total_value += total_value
+            portfolio_todays_change_value += todays_change * qty
+            portfolio_total_gain_loss += total_gain_loss
+            portfolio_previous_value += previous_close * qty
 
-        # Actualizar totales del portfolio
-        portfolio_total_value += total_value
-        portfolio_todays_change_value += todays_change * qty
-        portfolio_total_gain_loss += total_gain_loss
-        portfolio_previous_value += previous_close * qty
+            holding = StockHolding(
+                symbol=symbol,
+                description=data["description"],
+                current_price=round(current_price, 2),
+                todays_change=round(todays_change, 2),
+                todays_change_percent=round(todays_change_percent, 2),
+                purchase_price=round(purchase_price, 2),
+                qty=qty,
+                total_value=round(total_value, 2),
+                total_gain_loss=round(total_gain_loss, 2),
+                total_gain_loss_percent=round(total_gain_loss_percent, 2)
+            )
+            holdings.append(holding)
+        except Exception as e:
+            logger.error(f"Error processing portfolio holding for {symbol}: {str(e)}", exc_info=True)
 
-        # Crear objeto de holding con valores redondeados para mejor presentación
-        holding = StockHolding(
-            symbol=symbol,
-            description=data["description"],
-            current_price=round(current_price, 2),
-            todays_change=round(todays_change, 2),
-            todays_change_percent=round(todays_change_percent, 2),
-            purchase_price=round(purchase_price, 2),
-            qty=qty,
-            total_value=round(total_value, 2),
-            total_gain_loss=round(total_gain_loss, 2),
-            total_gain_loss_percent=round(total_gain_loss_percent, 2)
+    # Check if we have any holdings
+    if not holdings:
+        logger.error("No portfolio holdings could be processed")
+        raise StockAPIException(
+            status_code=500,
+            detail="Failed to process portfolio holdings",
+            code="PORTFOLIO_PROCESSING_ERROR"
         )
-        holdings.append(holding)
 
-    # Calcular porcentajes totales del portfolio
     portfolio_initial_value = portfolio_total_value - portfolio_total_gain_loss
     portfolio_todays_change_percent = (
-                                                  portfolio_todays_change_value / portfolio_previous_value) * 100 if portfolio_previous_value > 0 else 0
+        (portfolio_todays_change_value / portfolio_previous_value) * 100
+        if portfolio_previous_value > 0 else 0
+    )
     portfolio_total_gain_loss_percent = (
-                                                    portfolio_total_gain_loss / portfolio_initial_value) * 100 if portfolio_initial_value > 0 else 0
+        (portfolio_total_gain_loss / portfolio_initial_value) * 100
+        if portfolio_initial_value > 0 else 0
+    )
 
-    # Crear objeto final con valores redondeados
     return PortfolioHoldings(
         total_value=round(portfolio_total_value, 2),
         todays_change=round(portfolio_todays_change_value, 2),
@@ -1211,267 +1340,356 @@ def get_portfolio_holdings_live():
     )
 
 
-@app.post("/refresh")
+@app.get("/portfolio/profitability", response_model=List[ProfitabilityData], tags=["Portfolio"])
+def get_portfolio_profitability():
+    """Gets profitability data for all portfolio holdings"""
+    result = []
+
+    for symbol, data in PORTFOLIO_DATA.items():
+        try:
+            current_data = get_latest_data(symbol)
+            if current_data is None or current_data.get('currentPrice') is None:
+                continue
+
+            purchase_price = data["purchase_price"]
+            current_price = current_data.get('currentPrice')
+            profitability = ((current_price - purchase_price) / purchase_price) * 100
+
+            result.append(ProfitabilityData(
+                symbol=symbol,
+                name=data["description"],
+                original_price=purchase_price,
+                current_price=current_price,
+                profitability_percentage=profitability
+            ))
+        except Exception as e:
+            logger.error(f"Error calculating profitability for {symbol}: {str(e)}")
+
+    return sorted(result, key=lambda x: x.profitability_percentage, reverse=True)
+
+
+@app.post("/refresh", tags=["Admin"])
 def refresh_data(background_tasks: BackgroundTasks):
-    """
-    Fuerza una actualización de todos los datos en caché
-
-    Returns:
-        dict: Mensaje de confirmación de la actualización
-    """
+    """Forces a refresh of all cached data"""
     background_tasks.add_task(background_update_all_dataframes)
-    return {"message": "Actualización de datos iniciada en segundo plano"}
+    return {"message": "Background data refresh started", "timestamp": datetime.now().isoformat()}
 
 
-@app.exception_handler(StockAPIException)
-async def stock_exception_handler(request: Request, exc: StockAPIException):
-    """
-    Maneja las excepciones personalizadas de la API
-
-    Args:
-        request: Objeto Request de la petición
-        exc: Excepción StockAPIException
-
-    Returns:
-        JSONResponse: Respuesta JSON con detalles del error
-    """
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "error": {
-                "code": exc.code or str(exc.status_code),
-                "message": exc.detail,
-                "timestamp": datetime.now().isoformat(),
-                "path": request.url.path
-            }
-        }
-    )
-
-
-@app.get("/health")
+@app.get("/health", tags=["Admin"])
 def health_check():
-    """
-    Endpoint para verificar el estado de la API
+    """API health check endpoint"""
+    try:
+        # Basic database health check
+        conn = get_db_connection()
+        cursor = conn.cursor()
 
-    Returns:
-        dict: Estado de salud de la API incluyendo:
-            - status: "ok"
-            - timestamp: Fecha y hora actual
-            - cached_symbols: Lista de símbolos en caché
-    """
+        # Check if we can query the database
+        cursor.execute("SELECT COUNT(*) FROM stock_data")
+        row_count = cursor.fetchone()[0]
+
+        # Check for latest data
+        cursor.execute("SELECT MAX(timestamp) FROM stock_data")
+        latest_data = cursor.fetchone()[0]
+
+        conn.close()
+
+        db_status = {
+            "connection": "OK",
+            "row_count": row_count,
+            "latest_data": latest_data.isoformat() if latest_data else None
+        }
+    except Exception as e:
+        db_status = {
+            "connection": f"Error: {str(e)}",
+            "row_count": None,
+            "latest_data": None
+        }
+
     return {
         "status": "ok",
         "timestamp": datetime.now().isoformat(),
-        "cached_symbols": list(dataframes_cache.keys())
+        "cached_symbols": list(dataframes_cache.keys()),
+        "database_status": db_status,
+        "uptime_seconds": (datetime.now() - startup_time).total_seconds(),
+        "version": "2.0.0"
     }
 
 
-
-# Añadir estos endpoints después de la definición de los endpoints existentes
-# y antes de la función startup_event
-
-@app.get("/html/stocks")
-async def get_stock_list_html():
-    return FileResponse(os.path.join(static_dir, "stock_list.html"))
-
-@app.get("/html/stocks/{symbol}")
-async def get_stock_detail_html(symbol: str):
-    return FileResponse(os.path.join(static_dir, "stock_detail.html"))
-
-@app.get("/html/stocks/{symbol}/history")
-async def get_stock_history_html(symbol: str):
-    return FileResponse(os.path.join(static_dir, "stock_history.html"))
-
-@app.get("/html/chart")
-async def get_stock_chart_html():
-    """
-    Sirve la página HTML para mostrar el gráfico de un símbolo.
-    """
-    return FileResponse(os.path.join(static_dir, "stock_chart.html"))
+# ---- HTML ENDPOINTS --------
+# ------------------------------
+@app.get("/api/symbols", tags=["Data"])
+async def get_available_symbols():
+    """Returns list of available symbols"""
+    symbols = list_available_stocks_from_db()
+    return {"symbols": symbols}
 
 
-@app.get("/html/compare")
-async def get_compare_stocks_html():
-    """
-    Sirve la página HTML para comparar stocks.
-    """
-    return FileResponse(os.path.join(static_dir, "compare_stocks.html"))
-
-
-#-----------PROFITABILITY------------------
-
-@app.get("/html/portfolio/profitability")
-async def get_portfolio_profitability_html():
-    """
-    Sirve la página HTML para mostrar la rentabilidad del portafolio.
-    """
-    return FileResponse(os.path.join(static_dir, "portfolio_profitability.html"))
-
-@app.get("/html/portfolio/profitability/{symbol}")
-async def get_symbol_profitability_html(symbol: str):
-    """
-    Sirve la página HTML para mostrar la rentabilidad de un símbolo.
-    """
-    return FileResponse(os.path.join(static_dir, "symbol_profitability.html"))
-
-
-
-#---PLOTS
-
-
-@app.get("/html/stocks/{symbol}/chart/{field}")
-async def get_stock_chart_html(symbol: str, field: str):
-    return FileResponse(os.path.join(static_dir, "stock_chart.html"))
-
-@app.get("/timeseries", response_class=HTMLResponse)
-async def serve_timeseries_html():
-    """Endpoint que sirve la interfaz de visualización"""
-    file_path = os.path.join(static_dir, "timeseries.html")
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="Interfaz no encontrada")
-    return FileResponse(file_path)
-
-
-@app.get("/html/timeseries-profitability", response_class=HTMLResponse)
+@app.get("/html/timeseries-profitability", response_class=HTMLResponse, tags=["HTML"])
 async def get_timeseries_profitability_html():
-    """Sirve la interfaz de análisis completo"""
+    """Serves the full analysis interface"""
     return FileResponse(os.path.join(static_dir, "timeseries-profitability.html"))
 
 
-@app.get("/html/market/variations", response_class=HTMLResponse)
+@app.get("/html/market/variations", response_class=HTMLResponse, tags=["HTML"])
 async def get_market_variations_html():
-    """
-    Sirve la página HTML para mostrar las variaciones de precio de los símbolos.
-    """
+    """Serves the price variations HTML page"""
     return FileResponse(os.path.join(static_dir, "market_variations.html"))
 
 
-# HTML Endpoint para visualizar los datos del portfolio
-@app.get("/html/portfolio/holdings", response_class=HTMLResponse)
+@app.get("/html/portfolio/holdings", response_class=HTMLResponse, tags=["HTML"])
 async def get_portfolio_holdings_html():
-    """
-    Sirve la página HTML para mostrar las posiciones de la cartera.
-    """
+    """Serves the portfolio holdings HTML page"""
     return FileResponse(os.path.join(static_dir, "portfolio_holdings.html"))
 
 
-@app.get("/html")
+@app.get("/html/portfolio/profitability", response_class=HTMLResponse, tags=["HTML"])
+async def get_portfolio_profitability_html():
+    """Serves the portfolio profitability HTML page"""
+    return FileResponse(os.path.join(static_dir, "portfolio_profitability.html"))
+
+
+@app.get("/html", tags=["HTML"])
 async def get_html_index():
+    """Serves the main HTML page"""
     return FileResponse(os.path.join(static_dir, "index.html"))
 
 
-# ---- MANEJADOR DE EXCEPCIONES --------
+@app.get("/", include_in_schema=False)
+async def redirect_to_html():
+    """Redirects root to the HTML index"""
+    return HTMLResponse(content="""
+    <html>
+        <head>
+            <meta http-equiv="refresh" content="0;url=/html" />
+        </head>
+        <body>
+            <p>Redirecting to <a href="/html">HTML interface</a>...</p>
+        </body>
+    </html>
+    """)
+
+
+# ---- CUSTOM ROUTES FOR DIRECT FILE ACCESS --------
+# -------------------------------------------
+@app.get("/css/{filename}", include_in_schema=False)
+async def get_css(filename: str):
+    """Serves CSS files"""
+    css_dir = os.path.join(static_dir, "css")
+    os.makedirs(css_dir, exist_ok=True)
+    return FileResponse(os.path.join(css_dir, filename))
+
+
+@app.get("/js/{filename}", include_in_schema=False)
+async def get_js(filename: str):
+    """Serves JavaScript files"""
+    js_dir = os.path.join(static_dir, "js")
+    os.makedirs(js_dir, exist_ok=True)
+    return FileResponse(os.path.join(js_dir, filename))
+
+
+# ---- ADDITIONAL DATA ENDPOINTS --------
 # ------------------------------
+@app.get("/api/realtime-prices", tags=["Data"])
+async def get_realtime_prices():
+    """Gets real-time prices for all available symbols"""
+    symbols = list_available_stocks_from_db()
+    result = {}
 
-@app.exception_handler(StockAPIException)
-async def stock_exception_handler(request: Request, exc: StockAPIException):
-    """
-    Maneja las excepciones personalizadas de la API
+    for symbol in symbols:
+        try:
+            # Get only the most recent record
+            query = """
+                    SELECT current_price, timestamp, previous_close
+                    FROM stock_data
+                    WHERE symbol = %s
+                    ORDER BY timestamp DESC
+                        LIMIT 1 \
+                    """
 
-    Args:
-        request: Objeto Request de la petición
-        exc: Excepción StockAPIException
+            data = execute_query(query, (symbol,), use_dict_cursor=True)
 
-    Returns:
-        JSONResponse: Respuesta JSON con detalles del error
-    """
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "error": {
-                "code": exc.code or str(exc.status_code),
-                "message": exc.detail,
-                "timestamp": datetime.now().isoformat(),
-                "path": request.url.path
-            }
-        }
-    )
+            if data:
+                # Calculate change
+                current = data[0]['current_price']
+                previous = data[0]['previous_close']
+                change = current - previous if previous is not None else 0
+                change_percent = (change / previous * 100) if previous and previous > 0 else 0
+
+                result[symbol] = {
+                    "price": current,
+                    "change": change,
+                    "change_percent": change_percent,
+                    "timestamp": data[0]['timestamp'].isoformat() if isinstance(data[0]['timestamp'], datetime) else
+                    data[0]['timestamp']
+                }
+
+        except Exception as e:
+            logger.error(f"Error getting realtime price for {symbol}: {str(e)}")
+            result[symbol] = {"error": str(e)}
+
+    return result
 
 
-# ---- FUNCIONES DE INICIO --------
+@app.get("/api/last-updates", tags=["Data"])
+async def get_last_updates(limit: int = 10):
+    """Gets the most recent updates to the database"""
+    try:
+        query = """
+                SELECT symbol, timestamp, current_price, previous_close, volume
+                FROM stock_data
+                ORDER BY timestamp DESC
+                    LIMIT %s \
+                """
+
+        results = execute_query(query, (limit,), use_dict_cursor=True)
+
+        if not results:
+            return {"updates": []}
+
+        updates = []
+        for row in results:
+            # Format timestamp
+            if 'timestamp' in row and isinstance(row['timestamp'], datetime):
+                row['timestamp'] = row['timestamp'].isoformat()
+
+            # Calculate price change
+            current = row.get('current_price')
+            previous = row.get('previous_close')
+            if current is not None and previous is not None and previous > 0:
+                row['change'] = current - previous
+                row['change_percent'] = (row['change'] / previous) * 100
+            else:
+                row['change'] = 0
+                row['change_percent'] = 0
+
+            updates.append(row)
+
+        return {"updates": updates}
+
+    except Exception as e:
+        logger.error(f"Error getting last updates: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error getting last updates: {str(e)}")
+
+# ---- START PERIODIC UPDATES FUNCTION --------
 # ------------------------------
 def start_periodic_updates():
     """
-    Inicia un hilo para actualizar periódicamente todos los datos
-    con frecuencia reducida y actualizaciones escalonadas
+    Starts a thread to periodically update data from the database
+    with reduced frequency and staggered updates
     """
 
     def update_loop():
         while True:
             try:
-                logger.info("Iniciando actualización periódica de datos")
+                logger.info("Starting periodic data update from database")
 
-                # Obtener todos los símbolos disponibles
-                symbols = list_available_stocks_internal()
+                # Check connection to database
+                try:
+                    conn = get_db_connection()
+                    conn.close()
+                    logger.info("Database connection verified")
+                except Exception as db_err:
+                    logger.error(f"Database connection error: {str(db_err)}")
+                    time.sleep(60)  # Wait a minute before retrying
+                    continue
 
-                # Actualizar cada símbolo con un retraso entre ellos para evitar picos de carga
+                # Get all available symbols
+                symbols = list_available_stocks_from_db()
+                logger.info(f"Symbols found in database: {symbols}")
+
+                # Update each symbol with a delay between them to avoid load spikes
                 for symbol in symbols:
                     try:
-                        logger.info(f"Actualizando datos para {symbol}")
-                        load_dataframe(symbol, force_reload=True)
-                        # Esperar 5 segundos entre cada símbolo
-                        time.sleep(5)
+                        logger.info(f"Updating data for {symbol} from database")
+                        # Use the limit parameter to only load the most recent data for performance
+                        load_stock_data_from_db(symbol, force_reload=True, limit=200)
+                        # Wait 2 seconds between each symbol
+                        time.sleep(2)
                     except Exception as e:
-                        logger.error(f"Error actualizando {symbol}: {str(e)}")
+                        logger.error(f"Error updating {symbol} from database: {str(e)}")
 
-                logger.info(f"Actualización completada para {len(symbols)} símbolos")
+                logger.info(f"Update completed for {len(symbols)} symbols from database")
 
-                # Esperar 5 minutos (300 segundos) antes de la próxima actualización
-                # Mucho más amigable que 60 segundos
-                time.sleep(300)
+                # Wait 2 minutes (120 seconds) before the next update
+                # More responsive than 5 minutes but still reasonable for database load
+                time.sleep(120)
 
             except Exception as e:
-                logger.error(f"Error en el bucle de actualización: {str(e)}")
-                # Si hay un error, esperar antes de reintentar
+                logger.error(f"Error in database update loop: {str(e)}", exc_info=True)
+                # Wait before retrying if there's an error
                 time.sleep(30)
 
-    # Iniciar el hilo de actualización
+    # Start the update thread
     update_thread = threading.Thread(target=update_loop, daemon=True)
     update_thread.start()
-    logger.info("Hilo de actualización periódica iniciado")
+    logger.info("Periodic database update thread started")
+
+
+# ---- STARTUP/SHUTDOWN EVENTS --------
+# ------------------------------
+startup_time = datetime.now()
 
 
 @app.on_event("startup")
 def startup_event():
     """
-    Evento que se ejecuta al iniciar la aplicación
+    Event that runs on application startup
 
-    Realiza:
-    - Configuración inicial
-    - Inicio del hilo de actualizaciones periódicas
-    - Logging del estado inicial
+    Performs:
+    - Initial database configuration
+    - Starts the periodic updates thread
+    - Logs the initial state
     """
-    logger.info("Iniciando aplicación...")
-    logger.info(f"Configuración de caché - Máximo: {MAX_CACHE_SIZE} items, TTL: {CACHE_ITEM_TTL}s")
+    global startup_time
+    startup_time = datetime.now()
+
+    logger.info("Starting application with PostgreSQL integration...")
+    logger.info(f"Cache configuration - Maximum: {MAX_CACHE_SIZE} items, TTL: {CACHE_ITEM_TTL}s")
+    logger.info(f"Database configuration - Host: {DB_CONFIG['host']}, Database: {DB_CONFIG['database']}")
+
+    # Check database connection at startup
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM stock_data")
+        count = cursor.fetchone()[0]
+        logger.info(f"Database connection verified - {count} records in stock_data table")
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error connecting to database: {str(e)}")
+        # Continue starting the application, but warn about the issue
+        logger.warning("Application will continue, but there may be issues with database connectivity")
+
     start_periodic_updates()
-    logger.info("API inicializada y actualización periódica configurada")
+    logger.info("API initialized and periodic update configured")
 
 
 @app.on_event("shutdown")
 def shutdown_event():
     """
-    Evento que se ejecuta al detener la aplicación
+    Event that runs when the application stops
 
-    Realiza:
-    - Limpieza de la caché
-    - Logging del estado de cierre
+    Performs:
+    - Cache cleanup
+    - Logs the closing state
     """
-    logger.info("Deteniendo aplicación...")
+    logger.info("Stopping application...")
     with cache_lock:
-        logger.info(f"Limpiando caché ({len(dataframes_cache)} items)")
+        logger.info(f"Clearing cache ({len(dataframes_cache)} items)")
         dataframes_cache.clear()
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    # Configuración más robusta para el servidor
+    # More robust server configuration
     uvicorn.run(
-        "main:app",
+        "main_postgres:app",
         host="0.0.0.0",
-        port=8000,
-        reload=False,  # Deshabilitar reload en producción
-        workers=2,  # Reducir número de workers
-        timeout_keep_alive=65,  # Mayor tiempo de keep-alive
+        port=8080,
+        reload=False,  # Disable reload in production
+        workers=2,  # Reduce number of workers
+        timeout_keep_alive=65,  # Longer keep-alive time
         log_level="info"
     )
+
