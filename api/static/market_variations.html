@@ -450,7 +450,7 @@
                 return prefix + (num / 1000000000).toFixed(2) + 'B';
             }
             if (num >= 1000000) {
-                return prefix + (num / 1000000).toFixed(2) + 'M';
+                return prefix + (num / 1000000000).toFixed(2) + 'M';
             }
             if (num >= 1000) {
                 return prefix + (num / 1000).toFixed(2) + 'K';
@@ -515,13 +515,11 @@
             document.getElementById('errorMessage').style.display = 'none';
 
             try {
-                // Usar el endpoint timeseries-with-profitability con el parámetro is_variation=true
-                const response = await axios.get('/api/timeseries-with-profitability', {
+                const response = await axios.get('/api/timeseries-variations', {
                     params: {
                         symbol: selectedSymbols[0],
                         period: period,
-                        compare_all: true,
-                        is_variation: true  // Esto indica que queremos datos de variación
+                        compare_all: true
                     }
                 });
 
@@ -575,7 +573,6 @@
             const changeElement = document.querySelector('.variation-change');
 
             if (variationElement && lastDataPoint) {
-                // Mostrar la última variación en el overlay
                 variationElement.textContent = (lastDataPoint.price >= 0 ? '+' : '') + lastDataPoint.price.toFixed(2) + '%';
                 variationElement.style.color = lastDataPoint.price >= 0 ? '#34a853' : '#ea4335';
             }
@@ -620,15 +617,15 @@
             const dayLows = series.data.map(d => d.day_low).filter(Boolean);
             const dayHighs = series.data.map(d => d.day_high).filter(Boolean);
 
-            const min = dayLows.length > 0 ? Math.min(...dayLows) : (series.current_price * 0.98).toFixed(2);
-            const max = dayHighs.length > 0 ? Math.max(...dayHighs) : (series.current_price * 1.02).toFixed(2);
+            const min = dayLows.length > 0 ? Math.min(...dayLows) : (lastDataPoint.price * 0.98).toFixed(2);
+            const max = dayHighs.length > 0 ? Math.max(...dayHighs) : (lastDataPoint.price * 1.02).toFixed(2);
 
             document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(1) .indicator-value').textContent =
                 `${typeof min === 'number' ? min.toFixed(2) : min} $ - ${typeof max === 'number' ? max.toFixed(2) : max} $`;
 
             // Calcular volumen promedio
             const volumes = series.data.map(p => {
-                return p.volume || (p.volume === 0 ? 0 : null);
+                return p.volume || p.volumen || p.VOLUME || (p.volume === 0 ? 0 : null);
             }).filter(v => v !== null && v !== undefined && !isNaN(v));
 
             const avgVolume = volumes.length > 0
@@ -677,25 +674,25 @@
                     </div>
                     <div style="padding: 10px 15px; background-color: ${isPositive ? 'rgba(52, 168, 83, 0.1)' : 'rgba(234, 67, 53, 0.1)'}">
                         <span class="stock-change-indicator" style="color: ${isPositive ? '#34a853' : '#ea4335'}">
-                            ${isPositive ? '↑' : '↓'} ${Math.abs(stock.daily_variation).toFixed(2)}%
+                            ${isPositive ? '↑' : '↓'} ${Math.abs(stock.current_profitability).toFixed(2)}%
                         </span>
                     </div>
                     <div class="stock-metrics">
                         <div class="metric">
-                            <div class="metric-label">PRECIO ACTUAL</div>
-                            <div class="metric-value">${stock.current_price ? stock.current_price.toFixed(2) + ' $' : 'N/A'}</div>
+                            <div class="metric-label">APERTURA</div>
+                            <div class="metric-value">${lastPoint.open ? lastPoint.open.toFixed(2) + ' $' : 'N/A'}</div>
                         </div>
                         <div class="metric">
                             <div class="metric-label">CIERRE ANT.</div>
                             <div class="metric-value">${previousClose ? previousClose.toFixed(2) + ' $' : 'N/A'}</div>
                         </div>
                         <div class="metric">
-                            <div class="metric-label">VOLATILIDAD</div>
-                            <div class="metric-value">${stock.volatility.toFixed(2)}%</div>
+                            <div class="metric-label">MÍN. DIARIO</div>
+                            <div class="metric-value">${lastPoint.day_low ? lastPoint.day_low.toFixed(2) + ' $' : 'N/A'}</div>
                         </div>
                         <div class="metric">
-                            <div class="metric-label">RENTABILIDAD</div>
-                            <div class="metric-value">${stock.current_profitability ? stock.current_profitability.toFixed(2) + '%' : 'N/A'}</div>
+                            <div class="metric-label">MÁX. DIARIO</div>
+                            <div class="metric-value">${lastPoint.day_high ? lastPoint.day_high.toFixed(2) + ' $' : 'N/A'}</div>
                         </div>
                     </div>
                 `;
