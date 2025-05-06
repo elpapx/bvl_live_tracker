@@ -515,13 +515,13 @@
             document.getElementById('errorMessage').style.display = 'none';
 
             try {
-                const response = await axios.get('/api/timeseries-variations', {
+                const response = await axios.get('/api/simple-variations', {
                     params: {
                         symbol: selectedSymbols[0],
                         period: period,
                         compare_all: true
                     }
-                });
+            });
 
                 if (!response.data?.series?.length) {
                     throw new Error('No se recibieron datos válidos');
@@ -700,8 +700,295 @@
                 container.appendChild(stockCard);
             });
         }
+        // Function to update the variation chart with proper volume handling
+function renderVariationChart(series) {
+    const ctx = document.getElementById('variationChart').getContext('2d');
+    if (variationChart) variationChart.destroy();
+
+    const period = document.getElementById('period').value;
+    const isDailyView = period === '1w' || period === '1m' || period === '3m';
+    const isOneDayView = period === '1d';
+    const isRealTimeView = period === 'realtime';
+
+    variationChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            datasets: series.map(item => {
+                // Configuration for vista de 1 día
+                if (isOneDayView) {
+                    // Obtener el último punto del día anterior
+                    const now = new Date();
+                    const yesterday = new Date(now);
+                    yesterday.setDate(yesterday.getDate() - 1);
+                    const yesterdayKey = `${yesterday.getFullYear()}-${yesterday.getMonth()}-${yesterday.getDate()}`;
+
+                    // Buscar el último punto del día anterior
+                    let yesterdayPoint = null;
+                    for (let i = item.data.length - 1; i >= 0; i--) {
+                        const pointDate = new Date(item.data[i].timestamp);
+                        const pointKey = `${pointDate.getFullYear()}-${pointDate.getMonth()}-${pointDate.getDate()}`;
+                        if (pointKey === yesterdayKey) {
+                            yesterdayPoint = item.data[i];
+                            break;
+                        }
+                    }
+
+                    // Si no hay punto del día anterior, usar el primer punto disponible
+                    if (!yesterdayPoint && item.data.length > 0) {
+                        yesterdayPoint = item.data[0];
+                    }
+
+                    // Obtener el último punto (punto actual)
+                    const currentPoint = item.data[item.data.length - 1];
+
+                    // Crear dataset con solo dos puntos: día anterior y actual
+                    const dataPoints = [
+                        yesterdayPoint ? {
+                            x: yesterdayPoint.timestamp,
+                            y: yesterdayPoint.price,
+                            rawData: yesterdayPoint
+                        } : null,
+                        currentPoint ? {
+                            x: currentPoint.timestamp,
+                            y: currentPoint.price,
+                            rawData: currentPoint
+                        } : null
+                    ].filter(point => point !== null);
+
+                    return {
+                        label: item.symbol,
+                        data: dataPoints,
+                        borderColor: colors[item.symbol],
+                        backgroundColor: colors[item.symbol] + '20',
+                        tension: 0.1,
+                        borderWidth: 2,
+                        pointRadius: 3,
+                        fill: false
+                    };
+                }
+                // Configuración para vista en tiempo real
+                else if (isRealTimeView) {
+                    // Filtrar puntos solo para las horas de mercado (9 AM - 4 PM)
+                    const marketHoursData = item.data.filter(point => {
+                        const pointDate = new Date(point.timestamp);
+                        const hours = pointDate.getHours();
+                        return hours >= 9 && hours <= 16; // 9 AM to 4 PM
+                    });
+
+                    return {
+                        label: item.symbol,
+                        data: marketHoursData.map(point => ({
+                            x: point.timestamp,
+                            y: point.price,
+                            rawData: point
+                        })),
+                        borderColor: colors[item.symbol],
+                        backgroundColor: colors[item.symbol] + '20',
+                        tension: 0.1,
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        fill: false
+                    };
+                }
+                // Configuración para vistas diarias (semana, mes, 3 meses)
+                else {
+                    return {
+                        label: item.symbol,
+                        data: isDailyView ?
+                            getDailyPoints(item.data) :
+                            item.data.map(point => ({
+                                x: point.timestamp,
+                                y: point.price,
+                                rawData: point
+                            })),
+                        borderColor: colors[item.symbol],
+                        backgroundColor: colors[item.symbol] + '20',
+                        tension: 0.1,
+                        borderWidth: 2,
+                        pointRadius: isDailyView ? 3 : 0,
+                        fill: false
+                    };
+                }
+            })
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: {
+                mode: 'index',
+                intersect: false
+            },
+            scales: {
+                x: {
+                    type: 'time',
+                    time: {
+                        tooltipFormat: isRealTimeView ? 'DD/MM/YYYY HH:mm' :
+                                      (isDailyView ? 'DD/MM/YYYY' : 'DD/MM/YYYY HH:mm'),
+                        displayFormats: {
+                            hour: (isDailyView || isOneDayView) ? 'DD/MM' : 'HH:mm',
+                            day: 'DD/MM',
+                            week: 'DD/MM',
+                            month: 'MMM'
+                        },
+                        unit: isDailyView ? 'day' : undefined
+                    },
+                    grid: {
+                        display: false
+                    },
+                    title: {
+                        display: false
+                    }
+                },
+                y: {
+                    ticks: {
+                        callback: function(value) {
+                            return value + '%';
+                        }
+                    },
+                    title: {
+                        display: false
+                    },
+                    grid: {
+                        color: '#f1f1f1'
+                    }
+                }
+            },
+            plugins: {
+                legend: {
+                    position: 'top',
+                    labels: {
+                        usePointStyle: true,
+                        padding: 20
+                    }
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            const dataset = context.dataset;
+                            const dataPoint = dataset.data[context.dataIndex];
+                            const rawData = dataPoint.rawData;
+
+                            // Prepare the tooltip lines
+                            const tooltipLines = [
+                                `${dataset.label}: ${(dataPoint.y >= 0 ? '+' : '') + dataPoint.y.toFixed(2)}%`
+                            ];
+
+                            // Add open price if available
+                            if (rawData.open) {
+                                tooltipLines.push(`Apertura: $${rawData.open.toFixed(2)}`);
+                            }
+
+                            // Add low price if available
+                            if (rawData.day_low) {
+                                tooltipLines.push(`Mín: $${rawData.day_low.toFixed(2)}`);
+                            }
+
+                            // Add high price if available
+                            if (rawData.day_high) {
+                                tooltipLines.push(`Máx: $${rawData.day_high.toFixed(2)}`);
+                            }
+
+                            // Check and add volume - with multiple fallbacks
+                            const volume = rawData.volume || rawData.volumen;
+                            if (volume !== null && volume !== undefined) {
+                                tooltipLines.push(`Vol: ${formatNumber(volume, true)}`);
+                            }
+
+                            return tooltipLines;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+// Updated function to update the single stock indicators with proper volume handling
+function updateSingleStockIndicators(series) {
+    if (!series || !series.data || series.data.length === 0) return;
+
+    const lastDataPoint = series.data[series.data.length - 1];
+
+    // Obtener cierre anterior de manera confiable
+    const prevClose = getPreviousClose(series);
+
+    // Actualizar el cierre anterior
+    document.querySelector('#singleStockIndicators .indicator-card:nth-child(1) .indicator-value').textContent =
+        prevClose ? `${prevClose.toFixed(2)} $` : 'N/A';
+
+    // Capitalización de mercado
+    const marketCap = series.market_cap ? formatNumber(series.market_cap) : 'N/A';
+
+    // P/E Ratio
+    const peRatio = series.trailing_pe ? series.trailing_pe.toFixed(2) : 'N/A';
+
+    // Handle volume - improved with multiple fallbacks
+    let volume = 'N/A';
+
+    // First check if lastDataPoint has volume
+    if (lastDataPoint.volume && lastDataPoint.volume > 0) {
+        volume = formatNumber(lastDataPoint.volume, true);
+    }
+    // Try volumen (Spanish name) if volume doesn't exist
+    else if (lastDataPoint.volumen && lastDataPoint.volumen > 0) {
+        volume = formatNumber(lastDataPoint.volumen, true);
+    }
+    // Check for volume in series object (sometimes the API puts it there)
+    else if (series.volume || series.average_volume) {
+        const volValue = series.volume || series.average_volume;
+        volume = formatNumber(volValue, true);
+    }
+
+    document.querySelector('#singleStockIndicators .indicator-card:nth-child(2) .indicator-value').textContent = marketCap;
+    document.querySelector('#singleStockIndicators .indicator-card:nth-child(3) .indicator-value').textContent = peRatio;
+    document.querySelector('#singleStockIndicators .indicator-card:nth-child(4) .indicator-value').textContent = volume;
+
+    // Segunda fila de indicadores
+    // Encontrar mínimo y máximo en los datos disponibles
+    const dayLows = series.data.map(d => d.day_low).filter(Boolean);
+    const dayHighs = series.data.map(d => d.day_high).filter(Boolean);
+
+    const min = dayLows.length > 0 ? Math.min(...dayLows) : (lastDataPoint.price * 0.98).toFixed(2);
+    const max = dayHighs.length > 0 ? Math.max(...dayHighs) : (lastDataPoint.price * 1.02).toFixed(2);
+
+    document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(1) .indicator-value').textContent =
+        `${typeof min === 'number' ? min.toFixed(2) : min} $ - ${typeof max === 'number' ? max.toFixed(2) : max} $`;
+
+    // Calculate average volume with improved fallbacks
+    const volumes = [];
+
+    // Get all volume values with multiple fallbacks
+    series.data.forEach(p => {
+        // Try all possible volume field names
+        const volumeValue = p.volume || p.volumen || (p.volume === 0 ? 0 : null);
+        if (volumeValue !== null && volumeValue !== undefined && !isNaN(volumeValue)) {
+            volumes.push(volumeValue);
+        }
+    });
+
+    const avgVolume = volumes.length > 0
+        ? formatNumber(volumes.reduce((a, b) => a + b, 0) / volumes.length, true)
+        : 'N/A';
+
+    document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(2) .indicator-value').textContent = avgVolume;
+
+    // Dividend Yield
+    let dividendYield = series.dividend_yield ? series.dividend_yield : 0;
+    if (dividendYield > 100) {
+        dividendYield = (dividendYield / 100).toFixed(2) + '%';
+    } else {
+        dividendYield = dividendYield.toFixed(2) + '%';
+    }
+    document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(3) .indicator-value').textContent = dividendYield;
+
+    // Bolsa principal (ejemplo)
+    const exchange = 'NYSE';
+    document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(4) .indicator-value').textContent = exchange;
+}
+
 
         // Función para renderizar el gráfico de variación
+        // Function to update the variation chart with proper volume handling
         function renderVariationChart(series) {
             const ctx = document.getElementById('variationChart').getContext('2d');
             if (variationChart) variationChart.destroy();
@@ -715,7 +1002,7 @@
                 type: 'line',
                 data: {
                     datasets: series.map(item => {
-                        // Configuración para vista de 1 día
+                        // Configuration for vista de 1 día
                         if (isOneDayView) {
                             // Obtener el último punto del día anterior
                             const now = new Date();
@@ -867,25 +1154,124 @@
                                 label: function(context) {
                                     const dataset = context.dataset;
                                     const dataPoint = dataset.data[context.dataIndex];
-                                    const rawData = isRealTimeView ?
-                                        dataPoint.rawData :
-                                        (isDailyView ?
-                                            context.dataset.rawData[context.dataIndex] :
-                                            series.find(s => s.symbol === dataset.label).data[context.dataIndex]);
+                                    const rawData = dataPoint.rawData;
 
-                                    return [
-                                        `${dataset.label}: ${(dataPoint.y >= 0 ? '+' : '') + dataPoint.y.toFixed(2)}%`,
-                                        rawData.open ? `Apertura: $${rawData.open.toFixed(2)}` : null,
-                                        rawData.day_low ? `Mín: $${rawData.day_low.toFixed(2)}` : null,
-                                        rawData.day_high ? `Máx: $${rawData.day_high.toFixed(2)}` : null,
-                                        rawData.volume ? `Vol: ${formatNumber(rawData.volume, true)}` : null
-                                    ].filter(line => line !== null);
+                                    // Prepare the tooltip lines
+                                    const tooltipLines = [
+                                        `${dataset.label}: ${(dataPoint.y >= 0 ? '+' : '') + dataPoint.y.toFixed(2)}%`
+                                    ];
+
+                                    // Add open price if available
+                                    if (rawData.open) {
+                                        tooltipLines.push(`Apertura: $${rawData.open.toFixed(2)}`);
+                                    }
+
+                                    // Add low price if available
+                                    if (rawData.day_low) {
+                                        tooltipLines.push(`Mín: $${rawData.day_low.toFixed(2)}`);
+                                    }
+
+                                    // Add high price if available
+                                    if (rawData.day_high) {
+                                        tooltipLines.push(`Máx: $${rawData.day_high.toFixed(2)}`);
+                                    }
+
+                                    // Check and add volume - with multiple fallbacks
+                                    const volume = rawData.volume || rawData.volumen;
+                                    if (volume !== null && volume !== undefined) {
+                                        tooltipLines.push(`Vol: ${formatNumber(volume, true)}`);
+                                    }
+
+                                    return tooltipLines;
                                 }
                             }
                         }
                     }
                 }
             });
+        }
+
+        // Updated function to update the single stock indicators with proper volume handling
+        function updateSingleStockIndicators(series) {
+            if (!series || !series.data || series.data.length === 0) return;
+
+            const lastDataPoint = series.data[series.data.length - 1];
+
+            // Obtener cierre anterior de manera confiable
+            const prevClose = getPreviousClose(series);
+
+            // Actualizar el cierre anterior
+            document.querySelector('#singleStockIndicators .indicator-card:nth-child(1) .indicator-value').textContent =
+                prevClose ? `${prevClose.toFixed(2)} $` : 'N/A';
+
+            // Capitalización de mercado
+            const marketCap = series.market_cap ? formatNumber(series.market_cap) : 'N/A';
+
+            // P/E Ratio
+            const peRatio = series.trailing_pe ? series.trailing_pe.toFixed(2) : 'N/A';
+
+            // Handle volume - improved with multiple fallbacks
+            let volume = 'N/A';
+
+            // First check if lastDataPoint has volume
+            if (lastDataPoint.volume && lastDataPoint.volume > 0) {
+                volume = formatNumber(lastDataPoint.volume, true);
+            }
+            // Try volumen (Spanish name) if volume doesn't exist
+            else if (lastDataPoint.volumen && lastDataPoint.volumen > 0) {
+                volume = formatNumber(lastDataPoint.volumen, true);
+            }
+            // Check for volume in series object (sometimes the API puts it there)
+            else if (series.volume || series.average_volume) {
+                const volValue = series.volume || series.average_volume;
+                volume = formatNumber(volValue, true);
+            }
+
+            document.querySelector('#singleStockIndicators .indicator-card:nth-child(2) .indicator-value').textContent = marketCap;
+            document.querySelector('#singleStockIndicators .indicator-card:nth-child(3) .indicator-value').textContent = peRatio;
+            document.querySelector('#singleStockIndicators .indicator-card:nth-child(4) .indicator-value').textContent = volume;
+
+            // Segunda fila de indicadores
+            // Encontrar mínimo y máximo en los datos disponibles
+            const dayLows = series.data.map(d => d.day_low).filter(Boolean);
+            const dayHighs = series.data.map(d => d.day_high).filter(Boolean);
+
+            const min = dayLows.length > 0 ? Math.min(...dayLows) : (lastDataPoint.price * 0.98).toFixed(2);
+            const max = dayHighs.length > 0 ? Math.max(...dayHighs) : (lastDataPoint.price * 1.02).toFixed(2);
+
+            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(1) .indicator-value').textContent =
+                `${typeof min === 'number' ? min.toFixed(2) : min} $ - ${typeof max === 'number' ? max.toFixed(2) : max} $`;
+
+            // Calculate average volume with improved fallbacks
+            const volumes = [];
+
+            // Get all volume values with multiple fallbacks
+            series.data.forEach(p => {
+                // Try all possible volume field names
+                const volumeValue = p.volume || p.volumen || (p.volume === 0 ? 0 : null);
+                if (volumeValue !== null && volumeValue !== undefined && !isNaN(volumeValue)) {
+                    volumes.push(volumeValue);
+                }
+            });
+
+            const avgVolume = volumes.length > 0
+                ? formatNumber(volumes.reduce((a, b) => a + b, 0) / volumes.length, true)
+                : 'N/A';
+
+            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(2) .indicator-value').textContent = avgVolume;
+
+            // Dividend Yield
+            let dividendYield = series.dividend_yield ? series.dividend_yield : 0;
+            if (dividendYield > 100) {
+                dividendYield = (dividendYield / 100).toFixed(2) + '%';
+            } else {
+                dividendYield = dividendYield.toFixed(2) + '%';
+            }
+            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(3) .indicator-value').textContent = dividendYield;
+
+            // Bolsa principal (ejemplo)
+            const exchange = 'NYSE';
+            document.querySelector('#singleStockIndicators2 .indicator-card:nth-child(4) .indicator-value').textContent = exchange;
         }
 
         // Función auxiliar para obtener un punto por día (el último de cada día)
