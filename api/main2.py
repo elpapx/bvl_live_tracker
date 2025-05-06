@@ -1129,64 +1129,90 @@ async def get_time_series_variations(
                 logger.warning(f"No data available for {sym} in database for the specified period")
                 continue
 
-            # Convert DB data to DataFrame to calculate variations
-            df = pd.DataFrame(db_data)
+            # Convert DB data to DataFrame to calculate variations with proper error handling
+            try:
+                df = pd.DataFrame(db_data)
 
-            # Ensure currentPrice is numeric
-            df['currentPrice'] = pd.to_numeric(df['currentPrice'], errors='coerce')
+                # Ensure currentPrice is numeric and handle missing values
+                df['currentPrice'] = pd.to_numeric(df['currentPrice'], errors='coerce')
 
-            # Calculate variations based on period
-            if period == "realtime":
-                df['variation_pct'] = df['currentPrice'].pct_change() * 100
-            else:
-                # Calculate from first valid price
-                first_price = df['currentPrice'].iloc[0] if not df.empty else None
-                if first_price and first_price > 0:
-                    df['variation_pct'] = ((df['currentPrice'] - first_price) / first_price) * 100
+                # Fill NaN values to prevent calculation errors
+                df['currentPrice'] = df['currentPrice'].fillna(method='ffill').fillna(method='bfill')
+
+                # Calculate variations based on period with additional error checks
+                if period == "realtime":
+                    # Safety check to prevent empty DataFrames
+                    if len(df) < 2:
+                        df['variation_pct'] = 0.0
+                    else:
+                        df['variation_pct'] = df['currentPrice'].pct_change() * 100
                 else:
-                    df['variation_pct'] = 0.0
+                    # Calculate from first valid price with safety checks
+                    first_valid_idx = df['currentPrice'].first_valid_index()
+                    if first_valid_idx is not None and not df.empty:
+                        first_price = df.loc[first_valid_idx, 'currentPrice']
+                        if first_price and first_price > 0:
+                            df['variation_pct'] = ((df['currentPrice'] - first_price) / first_price) * 100
+                        else:
+                            df['variation_pct'] = 0.0
+                    else:
+                        df['variation_pct'] = 0.0
 
-            # Clean variations
-            df['variation_pct'] = df['variation_pct'].replace([np.inf, -np.inf], np.nan).fillna(0)
+                # Clean variations and ensure no NaN values remain
+                df['variation_pct'] = df['variation_pct'].replace([np.inf, -np.inf], np.nan).fillna(0)
 
-            # Convert back to dict
-            db_data = df.to_dict('records')
+                # Convert back to dict with careful handling
+                db_data = df.to_dict('records')
+            except Exception as calc_error:
+                logger.error(f"Error calculating variations for {sym}: {str(calc_error)}")
+                # Provide default variation values if calculation fails
+                for row in db_data:
+                    row['variation_pct'] = 0.0
 
             # Get the latest data for additional metrics
             last_current_data = get_latest_data(sym) or {}
 
-            # Create time series points
+            # Create time series points with robust error handling
             series_data = []
             current_price = None
+
             for row in db_data:
-                # Make timestamp a proper string if it's a datetime object
-                if isinstance(row['timestamp'], datetime):
-                    row['timestamp'] = row['timestamp'].isoformat()
+                try:
+                    # Make timestamp a proper string if it's a datetime object
+                    if isinstance(row['timestamp'], datetime):
+                        row['timestamp'] = row['timestamp'].isoformat()
 
-                # Keep track of current price for profitability calculation
-                if 'currentPrice' in row and row['currentPrice'] is not None:
-                    current_price = float(row['currentPrice'])
+                    # Keep track of current price for profitability calculation
+                    if 'currentPrice' in row and row['currentPrice'] is not None:
+                        current_price = float(row['currentPrice'])
 
-                # Get variation
-                variation = float(row.get('variation_pct', 0)) if row.get('variation_pct') is not None else 0
+                    # Get variation with fallback to zero
+                    variation = float(row.get('variation_pct', 0)) if row.get('variation_pct') is not None else 0
 
-                # Ensure values are the right type
-                volume = float(row.get('volumen', 0)) if row.get('volumen') is not None else None
-                day_open = float(row.get('open', 0)) if row.get('open') is not None else None
-                day_low = float(row.get('dayLow', 0)) if row.get('dayLow') is not None else None
-                day_high = float(row.get('dayHigh', 0)) if row.get('dayHigh') is not None else None
-                prev_close = float(row.get('previousClose', 0)) if row.get('previousClose') is not None else None
+                    # Handle potential None values for all fields
+                    volume = float(row.get('volumen', 0)) if row.get('volumen') is not None else None
+                    day_open = float(row.get('open', 0)) if row.get('open') is not None and row.get(
+                        'open') != "" else None
+                    day_low = float(row.get('dayLow', 0)) if row.get('dayLow') is not None and row.get(
+                        'dayLow') != "" else None
+                    day_high = float(row.get('dayHigh', 0)) if row.get('dayHigh') is not None and row.get(
+                        'dayHigh') != "" else None
+                    prev_close = float(row.get('previousClose', 0)) if row.get('previousClose') is not None and row.get(
+                        'previousClose') != "" else None
 
-                point = TimeSeriesPoint(
-                    timestamp=row['timestamp'],
-                    price=variation,  # For variation endpoint, price is the variation percentage
-                    volume=volume,
-                    open=day_open,
-                    day_low=day_low,
-                    day_high=day_high,
-                    previous_close=prev_close
-                )
-                series_data.append(point)
+                    point = TimeSeriesPoint(
+                        timestamp=row['timestamp'],
+                        price=variation,  # For variation endpoint, price is the variation percentage
+                        volume=volume,
+                        open=day_open,
+                        day_low=day_low,
+                        day_high=day_high,
+                        previous_close=prev_close
+                    )
+                    series_data.append(point)
+                except Exception as point_error:
+                    logger.error(f"Error processing data point for {sym}: {str(point_error)}")
+                    # Continue with next point instead of failing entire series
 
             if not series_data:
                 logger.warning(f"No valid data points for {sym}")
@@ -1196,9 +1222,13 @@ async def get_time_series_variations(
             original_price = ORIGINAL_PRICES.get(sym)
             last_variation = series_data[-1].price if series_data else 0.0
 
-            # Calculate volatility (standard deviation of variations)
-            variation_values = [point.price for point in series_data]
-            volatility = float(np.std(variation_values)) if len(variation_values) > 1 else 0
+            # Calculate volatility (standard deviation of variations) with error handling
+            try:
+                variation_values = [point.price for point in series_data]
+                volatility = float(np.std(variation_values)) if len(variation_values) > 1 else 0
+            except Exception as vol_error:
+                logger.error(f"Error calculating volatility for {sym}: {str(vol_error)}")
+                volatility = 0.0
 
             # Calculate profitability
             profitability = None
