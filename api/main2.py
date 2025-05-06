@@ -28,7 +28,7 @@ import pytz
 # ------------------------------
 # PostgreSQL Database Configuration
 DB_CONFIG = {
-    "host": "98.85.189.191",
+    "host": "localhost", #98.85.189.191
     "port": 5432,
     "database": "bvl_monitor",
     "user": "bvl_user",
