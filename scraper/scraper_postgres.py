@@ -14,7 +14,7 @@ from datetime import datetime
 # Configuración centralizada
 class ScraperConfig:
     # Configuración de PostgreSQL
-    PG_HOST = "98.85.189.191"
+    PG_HOST = "localhost"
     PG_PORT = 5432
     PG_USER = "bvl_user"
     PG_PASSWORD = "179fae82"
@@ -26,7 +26,7 @@ class ScraperConfig:
     LOGS_DIR = PROJECT_ROOT / "logs"
 
     # Configuración de tiempo
-    UPDATE_INTERVAL_MINUTES = 1
+    UPDATE_INTERVAL_MINUTES = 3
     TOTAL_RUNTIME_HOURS = 7
     TOTAL_ITERATIONS = (TOTAL_RUNTIME_HOURS * 60) // UPDATE_INTERVAL_MINUTES
 
@@ -39,19 +39,15 @@ class ScraperConfig:
         "BAP": {
             "yahoo_fields": [
                 "currentPrice", "previousClose", "open", "dayLow", "dayHigh",
-                "bid", "dividendYield", "earningsGrowth", "revenueGrowth",
-                "grossMargins", "ebitdaMargins", "operatingMargins", "financialCurrency",
-                "returnOnAssets", "returnOnEquity", "bookValue", "priceToBook",
-                "volume", "fiftyTwoWeekRange", "marketCap", "trailingPE"
+                "bid", "dividendYield","volume", "fiftyTwoWeekRange",
+                "marketCap", "trailingPE"
             ]
         },
         "BRK-B": {
             "yahoo_fields": [
                 "currentPrice", "previousClose", "open", "dayLow", "dayHigh",
-                "bid", "dividendYield", "earningsGrowth", "revenueGrowth",
-                "grossMargins", "ebitdaMargins", "operatingMargins", "financialCurrency",
-                "returnOnAssets", "returnOnEquity", "bookValue", "priceToBook",
-                "volume", "fiftyTwoWeekRange", "marketCap", "trailingPE"
+                "bid", "dividendYield",  "volume", "fiftyTwoWeekRange",
+                "marketCap", "trailingPE"
             ]
         },
         "ILF": {
