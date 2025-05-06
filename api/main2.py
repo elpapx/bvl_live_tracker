@@ -1321,66 +1321,73 @@ def get_portfolio_holdings_live():
         try:
             logger.info(f"Procesando símbolo: {symbol}")
 
-            # Usar datos respaldo definidos en configuración
+            # Valores de compra del portafolio
             purchase_price = float(data["purchase_price"])
             qty = int(data["qty"])
 
-            # Intentar obtener datos actuales con manejo de valores nulos
-            if symbol == "BRK-B":
-                # Consulta directa a la base de datos para BRK-B
-                query = """
-                        SELECT current_price, previous_close
-                        FROM stock_data
-                        WHERE symbol = 'BRK-B'
-                        ORDER BY timestamp DESC LIMIT 1
-                        """
-                result = execute_query(query, use_dict_cursor=True)
+            # Consulta para encontrar el último registro con precio no nulo
+            query = """
+                    SELECT current_price, previous_close, timestamp
+                    FROM stock_data
+                    WHERE symbol = %s AND current_price IS NOT NULL
+                    ORDER BY timestamp DESC
+                        LIMIT 1
+                    """
 
-                # Manejo de valores nulos
-                current_price = None
-                previous_close = None
+            result = execute_query(query, (symbol,), use_dict_cursor=True)
 
-                if result and len(result) > 0:
-                    if result[0]['current_price'] is not None:
-                        current_price = float(result[0]['current_price'])
-                    if result[0]['previous_close'] is not None:
-                        previous_close = float(result[0]['previous_close'])
+            current_price = None
+            previous_close = None
 
-                # Si alguno es None, usar valor de respaldo
-                if current_price is None:
-                    current_price = float(ORIGINAL_PRICES.get(symbol, 0.0))
-                    logger.info(f"Usando precio original para {symbol}: {current_price}")
+            if result and len(result) > 0:
+                timestamp = result[0]['timestamp'] if 'timestamp' in result[0] else "desconocido"
+                logger.info(f"Datos con precio no nulo encontrados para {symbol} con timestamp {timestamp}")
 
-                if previous_close is None:
-                    previous_close = current_price
-                    logger.info(f"Usando current_price como previous_close para {symbol}")
+                # Extraer valores (ahora sabemos que current_price no es nulo)
+                current_price = float(result[0]['current_price'])
+                logger.info(f"Usando precio actual de BD para {symbol}: {current_price}")
+
+                # Comprobar si tenemos previous_close
+                if result[0]['previous_close'] is not None:
+                    previous_close = float(result[0]['previous_close'])
+                    logger.info(f"Usando precio previo de BD para {symbol}: {previous_close}")
+                else:
+                    # Si no hay previous_close, buscar el penúltimo registro con precio no nulo
+                    prev_query = """
+                                 SELECT current_price
+                                 FROM stock_data
+                                 WHERE symbol = %s \
+                                   AND current_price IS NOT NULL
+                                   AND timestamp \
+                                     < %s
+                                 ORDER BY timestamp DESC
+                                     LIMIT 1 \
+                                 """
+                    prev_result = execute_query(prev_query, (symbol, timestamp), use_dict_cursor=True)
+
+                    if prev_result and len(prev_result) > 0 and prev_result[0]['current_price'] is not None:
+                        previous_close = float(prev_result[0]['current_price'])
+                        logger.info(f"Usando precio previo de registro anterior para {symbol}: {previous_close}")
+                    else:
+                        previous_close = current_price
+                        logger.info(
+                            f"Sin registro previo, usando precio actual como previo para {symbol}: {previous_close}")
             else:
-                # Proceso normal para otros símbolos
-                current_data = get_latest_data(symbol)
-
-                # Inicializar con valores de respaldo
+                # No se encontraron registros con precio no nulo, usar valores originales
+                logger.warning(f"No hay registros con precio no nulo para {symbol}, usando valores base")
                 current_price = float(ORIGINAL_PRICES.get(symbol, 0.0))
                 previous_close = current_price
 
-                if current_data is not None:
-                    # Intentar extraer con manejo seguro de nulos
-                    if 'currentPrice' in current_data and current_data['currentPrice'] is not None:
-                        current_price = float(current_data['currentPrice'])
-
-                    if 'previousClose' in current_data and current_data['previousClose'] is not None:
-                        previous_close = float(current_data['previousClose'])
-                    else:
-                        previous_close = current_price
-
-            # Verificar datos críticos una vez más
+            # Verificación de valores
             if current_price <= 0:
-                logger.warning(f"Precio inválido para {symbol}, usando precio original")
-                current_price = float(ORIGINAL_PRICES.get(symbol, 1.0))  # Evitar cero
+                current_price = float(ORIGINAL_PRICES.get(symbol, 1.0))
+                logger.warning(f"Precio no válido para {symbol}, usando precio base: {current_price}")
 
             if previous_close <= 0:
                 previous_close = current_price
+                logger.warning(f"Precio previo no válido para {symbol}, usando precio actual: {previous_close}")
 
-            # Calcular métricas con verificación de valores
+            # Calcular métricas del holding
             todays_change = current_price - previous_close
             todays_change_percent = (todays_change / previous_close) * 100 if previous_close > 0 else 0.0
 
@@ -1388,7 +1395,7 @@ def get_portfolio_holdings_live():
             total_gain_loss = total_value - (purchase_price * qty)
             total_gain_loss_percent = (total_gain_loss / (purchase_price * qty)) * 100 if purchase_price > 0 else 0.0
 
-            # Actualizar totales del portfolio
+            # Actualizar totales del portafolio
             portfolio_total_value += total_value
             portfolio_todays_change_value += todays_change * qty
             portfolio_total_gain_loss += total_gain_loss
@@ -1408,39 +1415,34 @@ def get_portfolio_holdings_live():
                 total_gain_loss_percent=round(total_gain_loss_percent, 2)
             )
             holdings.append(holding)
-            logger.info(f"Procesamiento exitoso para {symbol}")
+            logger.info(f"Procesamiento exitoso para {symbol}: valor final={current_price}")
 
         except Exception as e:
-            logger.error(f"Error processing portfolio holding for {symbol}: {str(e)}", exc_info=True)
-            # Intentar crear un holding con datos de respaldo
-            try:
-                fallback_price = float(ORIGINAL_PRICES.get(symbol, 0.0))
-                purchase_price = float(data["purchase_price"])
-                qty = int(data["qty"])
+            logger.error(f"Error processing {symbol}: {str(e)}", exc_info=True)
+            fallback_price = float(ORIGINAL_PRICES.get(symbol, 0.0))
+            purchase_price = float(data["purchase_price"])
+            qty = int(data["qty"])
 
-                holding = StockHolding(
-                    symbol=symbol,
-                    description=data["description"],
-                    current_price=fallback_price,
-                    todays_change=0.0,
-                    todays_change_percent=0.0,
-                    purchase_price=purchase_price,
-                    qty=qty,
-                    total_value=fallback_price * qty,
-                    total_gain_loss=(fallback_price - purchase_price) * qty,
-                    total_gain_loss_percent=((
-                                                         fallback_price - purchase_price) / purchase_price) * 100 if purchase_price > 0 else 0.0
-                )
-                holdings.append(holding)
+            holding = StockHolding(
+                symbol=symbol,
+                description=data["description"],
+                current_price=round(fallback_price, 2),
+                todays_change=0.0,
+                todays_change_percent=0.0,
+                purchase_price=round(purchase_price, 2),
+                qty=qty,
+                total_value=round(fallback_price * qty, 2),
+                total_gain_loss=round((fallback_price - purchase_price) * qty, 2),
+                total_gain_loss_percent=round(
+                    ((fallback_price - purchase_price) / purchase_price) * 100 if purchase_price > 0 else 0.0, 2)
+            )
+            holdings.append(holding)
 
-                # Actualizar totales del portfolio con datos de respaldo
-                portfolio_total_value += fallback_price * qty
-                portfolio_total_gain_loss += (fallback_price - purchase_price) * qty
-                portfolio_previous_value += fallback_price * qty
+            portfolio_total_value += fallback_price * qty
+            portfolio_total_gain_loss += (fallback_price - purchase_price) * qty
+            portfolio_previous_value += fallback_price * qty
 
-                logger.info(f"Creado holding de respaldo para {symbol}")
-            except Exception as fallback_error:
-                logger.error(f"Error también en respaldo para {symbol}: {str(fallback_error)}")
+            logger.info(f"Creado holding de respaldo para {symbol} con precio {fallback_price}")
 
     # Verificar si tenemos holdings
     if not holdings:
@@ -1451,7 +1453,7 @@ def get_portfolio_holdings_live():
             code="PORTFOLIO_PROCESSING_ERROR"
         )
 
-    # Calcular métricas del portfolio con manejo de errores
+    # Calcular métricas del portfolio
     try:
         portfolio_initial_value = portfolio_total_value - portfolio_total_gain_loss
         portfolio_todays_change_percent = (
