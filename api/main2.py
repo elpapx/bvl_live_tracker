@@ -961,18 +961,20 @@ def monitor_metrics():
 async def get_time_series_with_profitability(
         symbol: str = Query("BAP", description="Symbol to query (BAP, BRK-B, ILF)"),
         period: str = Query("1w", description="Period (realtime, 1d, 1w, 1m, 3m)"),
-        compare_all: bool = Query(False, description="Show all symbols together")
+        compare_all: bool = Query(False, description="Show all symbols together"),
+        is_variation: bool = Query(False, description="Whether to return variation data instead of price data")
 ):
-    """Gets time series with profitability information"""
+    """Gets time series with profitability or variation information"""
     symbols_to_fetch = list_available_stocks_from_db() if compare_all else [symbol]
     start_date, end_date = get_date_range_for_period(period)
 
-    logger.info(f"Processing symbols: {symbols_to_fetch}, period: {period}, date range: {start_date} to {end_date}")
+    logger.info(
+        f"Processing symbols: {symbols_to_fetch}, period: {period}, date range: {start_date} to {end_date}, is_variation: {is_variation}")
     result = []
 
     for sym in symbols_to_fetch:
         try:
-            # Modificada para tomar toda la información disponible si es 3m
+            # Get data directly from the database for the specified time range
             query = """
                     SELECT symbol, timestamp, current_price as "currentPrice", previous_close as "previousClose", open, day_low as "dayLow", day_high as "dayHigh", dividend_yield as "dividendYield", volume as "volumen", fifty_two_week_range as "fiftyTwoWeekRange", market_cap as "marketCap", trailing_pe as "trailingPE"
                     FROM stock_data
@@ -996,37 +998,68 @@ async def get_time_series_with_profitability(
 
             db_data = execute_query(query, (sym, start_date, end_date), use_dict_cursor=True)
 
-            if not db_data:
+            if not db_data or len(db_data) == 0:
                 logger.warning(f"No data available for {sym} in database for the specified period")
                 continue
+
+            # Convert to DataFrame for calculations if needed
+            df = pd.DataFrame(db_data)
+
+            # Ensure numeric types
+            numeric_columns = ['currentPrice', 'previousClose', 'open', 'dayLow', 'dayHigh', 'volumen']
+            for col in numeric_columns:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+
+            # Calculate variations if requested
+            if is_variation:
+                # Calculate percentage change from first price
+                if len(df) > 1 and 'currentPrice' in df.columns:
+                    first_price = df['currentPrice'].dropna().iloc[0] if not df['currentPrice'].dropna().empty else 0
+                    if first_price > 0:
+                        df['variation_pct'] = ((df['currentPrice'] - first_price) / first_price) * 100
+                    else:
+                        df['variation_pct'] = 0.0
+                else:
+                    df['variation_pct'] = 0.0
+
+                # Clean up any NaN values
+                df['variation_pct'] = df['variation_pct'].fillna(0).replace([np.inf, -np.inf], 0)
 
             # Get the latest data for additional metrics
             last_current_data = get_latest_data(sym) or {}
 
             # Create time series points
             series_data = []
-            for row in db_data:
+            for _, row in df.iterrows():
                 # Make timestamp a proper string if it's a datetime object
-                if isinstance(row['timestamp'], datetime):
-                    row['timestamp'] = row['timestamp'].isoformat()
+                timestamp = row['timestamp'].isoformat() if isinstance(row['timestamp'], datetime) else str(
+                    row['timestamp'])
 
-                # Ensure values are the right type
-                price = float(row['currentPrice']) if row.get('currentPrice') is not None else None
-                volume = float(row.get('volumen', 0)) if row.get('volumen') is not None else None
-                day_open = float(row.get('open', 0)) if row.get('open') is not None else None
-                day_low = float(row.get('dayLow', 0)) if row.get('dayLow') is not None else None
-                day_high = float(row.get('dayHigh', 0)) if row.get('dayHigh') is not None else None
+                # When returning variation data, use variation_pct as the "price"
+                if is_variation and 'variation_pct' in row:
+                    price_value = float(row['variation_pct'])
+                else:
+                    price_value = float(row['currentPrice']) if not pd.isna(row['currentPrice']) else 0.0
 
-                if price is not None:
-                    point = TimeSeriesPoint(
-                        timestamp=row['timestamp'],
-                        price=price,
-                        volume=volume,
-                        open=day_open,
-                        day_low=day_low,
-                        day_high=day_high
-                    )
-                    series_data.append(point)
+                # Get other values with safe defaults
+                volume = float(row['volumen']) if 'volumen' in row and not pd.isna(row['volumen']) else None
+                open_val = float(row['open']) if 'open' in row and not pd.isna(row['open']) else None
+                day_low = float(row['dayLow']) if 'dayLow' in row and not pd.isna(row['dayLow']) else None
+                day_high = float(row['dayHigh']) if 'dayHigh' in row and not pd.isna(row['dayHigh']) else None
+                prev_close = float(row['previousClose']) if 'previousClose' in row and not pd.isna(
+                    row['previousClose']) else None
+
+                point = TimeSeriesPoint(
+                    timestamp=timestamp,
+                    price=price_value,
+                    volume=volume,
+                    open=open_val,
+                    day_low=day_low,
+                    day_high=day_high,
+                    previous_close=prev_close
+                )
+                series_data.append(point)
 
             if not series_data:
                 logger.warning(f"No valid data points for {sym}")
@@ -1034,10 +1067,19 @@ async def get_time_series_with_profitability(
 
             # Get key metrics
             original_price = ORIGINAL_PRICES.get(sym)
-            last_price = series_data[-1].price if series_data else None
+            last_price = float(df['currentPrice'].iloc[-1]) if 'currentPrice' in df.columns and not df.empty else None
+
+            # Calculate profitability and volatility
             profitability = None
             if last_price and original_price and original_price > 0:
                 profitability = ((last_price - original_price) / original_price) * 100
+
+            daily_variation = 0.0
+            volatility = 0.0
+
+            if is_variation and 'variation_pct' in df.columns:
+                daily_variation = float(df['variation_pct'].iloc[-1]) if not df.empty else 0.0
+                volatility = float(df['variation_pct'].std()) if len(df) > 1 else 0.0
 
             # Create the series object
             symbol_series = SymbolTimeSeries(
@@ -1067,7 +1109,9 @@ async def get_time_series_with_profitability(
                 ),
                 fifty_two_week_range=(
                     last_current_data.get('fiftyTwoWeekRange', None)
-                )
+                ),
+                daily_variation=daily_variation,
+                volatility=volatility
             )
             result.append(symbol_series)
 
@@ -1083,96 +1127,14 @@ async def get_time_series_with_profitability(
         )
 
     return TimeSeriesResponse(series=result)
-
-
-@app.get("/api/simple-variations", tags=["Data"])
-async def get_simple_variations(
-        symbol: str = Query("BAP", description="Symbol to query"),
+@app.get("/api/timeseries-variations", response_model=TimeSeriesResponse, tags=["Data"])
+async def get_time_series_variations(
+        symbol: str = Query("BAP", description="Symbol to query (BAP, BRK-B, ILF)"),
         period: str = Query("1w", description="Period (realtime, 1d, 1w, 1m, 3m)"),
         compare_all: bool = Query(False, description="Show all symbols together")
 ):
-    """Simplified endpoint for market variations page"""
-    try:
-        symbols_to_fetch = list_available_stocks_from_db() if compare_all else [symbol]
-        start_date, end_date = get_date_range_for_period(period)
-
-        logger.info(f"Simple variations for: {symbols_to_fetch}, period: {period}")
-        result = {"series": []}
-
-        for sym in symbols_to_fetch:
-            # Get only required columns to minimize potential errors
-            query = """
-                    SELECT symbol, timestamp, current_price
-                    FROM stock_data
-                    WHERE symbol = %s
-                      AND timestamp BETWEEN %s \
-                      AND %s
-                    ORDER BY timestamp \
-                    """
-
-            data = execute_query(query, (sym, start_date, end_date), use_dict_cursor=True)
-
-            if not data or len(data) < 2:  # Need at least 2 points for variations
-                logger.warning(f"Insufficient data for {sym} variations")
-                continue
-
-            # Create a simplified time series
-            prices = []
-            timestamps = []
-
-            for row in data:
-                if row['current_price'] is not None:
-                    prices.append(float(row['current_price']))
-                    timestamps.append(
-                        row['timestamp'].isoformat() if isinstance(row['timestamp'], datetime) else row['timestamp'])
-
-            if not prices:
-                continue
-
-            # Calculate percentage change from first price
-            first_price = prices[0]
-            variation_data = []
-
-            for i, price in enumerate(prices):
-                if first_price > 0:
-                    variation = ((price - first_price) / first_price) * 100
-                else:
-                    variation = 0
-
-                variation_data.append({
-                    "timestamp": timestamps[i],
-                    "price": variation
-                })
-
-            # Calculate volatility
-            variations = [point["price"] for point in variation_data]
-            volatility = float(np.std(variations)) if len(variations) > 1 else 0
-
-            # Create simplified series object
-            series_obj = {
-                "symbol": sym,
-                "data": variation_data,
-                "period": period,
-                "daily_variation": variation_data[-1]["price"] if variation_data else 0,
-                "volatility": volatility
-            }
-
-            result["series"].append(series_obj)
-
-        # Add available periods and symbols
-        result["available_periods"] = ["realtime", "1d", "1w", "1m", "3m"]
-        result["available_symbols"] = list_available_stocks_from_db()
-
-        return result
-
-    except Exception as e:
-        logger.error(f"Error in simple variations: {str(e)}", exc_info=True)
-        # Return a minimal valid response instead of raising an error
-        return {
-            "series": [],
-            "available_periods": ["realtime", "1d", "1w", "1m", "3m"],
-            "available_symbols": ["BAP", "BRK-B", "ILF"]
-        }
+    """Redirects to timeseries-with-profitability with variation flag enabled"""
+    return await get_time_series_with_profitability(symbol, period, compare_all, True)
 
 
 @app.get("/portfolio/holdings/live", response_model=PortfolioHoldings, tags=["Portfolio"])
