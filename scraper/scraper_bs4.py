@@ -10,7 +10,6 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from fake_useragent import UserAgent
-import time
 import json
 import re
 import os
@@ -74,9 +73,67 @@ class ScraperConfig:
     SYMBOLS_TO_SCRAPE = ["ILF", "BAP", "BRK-B"]
 
     # Scheduling configuration
-    SCHEDULE_INTERVAL_MINUTES = 10
+    SCHEDULE_INTERVAL_MINUTES = 7  # Cambiado a 7 minutos
     RESULTS_DIR = "yahoo_finance_results"
 
+    # Horas de mercado
+    MARKET_OPEN_HOUR = 9  # 9 AM
+    MARKET_CLOSE_HOUR = 16  # 4 PM
+
+
+# Función para verificar si estamos en horas de mercado
+def is_market_hours():
+    """Verifica si estamos en horas de mercado (9 AM - 4 PM) en día laborable"""
+    now = datetime.now()
+    current_hour = now.hour
+    is_weekend = now.weekday() >= 5  # 5=sábado, 6=domingo
+
+    # Verificar si es día laborable y dentro de horas de mercado
+    return (not is_weekend) and (ScraperConfig.MARKET_OPEN_HOUR <= current_hour < ScraperConfig.MARKET_CLOSE_HOUR)
+
+
+# Función para limpiar procesos de Chrome
+def cleanup_chrome_processes(aggressive=False):
+    """Limpia procesos de Chrome y chromedriver"""
+    try:
+        # Contar procesos antes de limpieza
+        chrome_before = int(os.popen("ps aux | grep -i chrome | grep -v grep | wc -l").read().strip())
+        driver_before = int(os.popen("ps aux | grep -i chromedriver | grep -v grep | wc -l").read().strip())
+
+        if aggressive:
+            # Limpieza agresiva - mata todos los procesos
+            os.system("pkill -f chrome")
+            os.system("pkill -f chromedriver")
+            logger.info("Ejecutando limpieza AGRESIVA de procesos Chrome")
+        else:
+            # Limpieza normal - mata solo procesos antiguos
+            os.system("pkill -f chrome --older-than 2m")
+            os.system("pkill -f chromedriver --older-than 2m")
+            logger.info("Ejecutando limpieza REGULAR de procesos Chrome")
+
+        # Esperar un momento para que los procesos se terminen
+        time.sleep(1)
+
+        # Contar procesos después de limpieza
+        chrome_after = int(os.popen("ps aux | grep -i chrome | grep -v grep | wc -l").read().strip())
+        driver_after = int(os.popen("ps aux | grep -i chromedriver | grep -v grep | wc -l").read().strip())
+
+        # Registrar resultados
+        logger.info(
+            f"Limpieza completada: Chrome {chrome_before}→{chrome_after}, Chromedriver {driver_before}→{driver_after}")
+
+        # Si queda un número excesivo después de limpieza normal, hacer limpieza agresiva
+        if not aggressive and (chrome_after > 10 or driver_after > 5):
+            logger.warning(f"Demasiados procesos restantes, ejecutando limpieza agresiva")
+            cleanup_chrome_processes(aggressive=True)
+
+        return True
+    except Exception as e:
+        logger.error(f"Error en limpieza de procesos: {str(e)}")
+        return False
+
+
+# ----- CÓDIGO ORIGINAL DEL SCRAPER (SIN CAMBIOS) -----
 
 def setup_driver():
     """Configura y devuelve un driver de Chrome para Selenium"""
@@ -641,10 +698,69 @@ def run_scraping_job():
             driver.quit()
             logger.info("Selenium driver closed")
 
+        # NUEVO: Limpiar procesos de Chrome/chromedriver que puedan haberse quedado
+        cleanup_chrome_processes()
+
+
+# ----- NUEVA FUNCIÓN PARA EJECUTAR SOLO EN HORAS DE MERCADO -----
+def run_market_hours_scraper():
+    """Ejecutar el scraper solo durante horas de mercado (9 AM - 4 PM en días laborables)"""
+    try:
+        # Mostrar banner de inicio
+        logger.info("=" * 80)
+        logger.info(f"AUTOMATED STOCK DATA SCRAPER - MARKET HOURS ONLY")
+        logger.info(f"Interval: Every {ScraperConfig.SCHEDULE_INTERVAL_MINUTES} minutes")
+        logger.info(f"Symbols: {', '.join(ScraperConfig.SYMBOLS_TO_SCRAPE)}")
+        logger.info(
+            f"Market Hours: {ScraperConfig.MARKET_OPEN_HOUR}AM - {ScraperConfig.MARKET_CLOSE_HOUR}PM (Weekdays Only)")
+        logger.info(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info("=" * 80)
+
+        # Bucle principal
+        while True:
+            # Verificar si estamos en horas de mercado
+            if is_market_hours():
+                # Estamos en horas de mercado - ejecutar el scraper
+                logger.info("Dentro de horas de mercado - ejecutando scraper")
+                run_scraping_job()
+
+                # Verificar si estamos cerca del cierre del mercado
+                now = datetime.now()
+                if now.hour >= ScraperConfig.MARKET_CLOSE_HOUR - 1 and now.minute >= 55:
+                    # Estamos cerca de las 4 PM - hacer limpieza final
+                    logger.info("Fin del día de mercado - realizando limpieza final")
+                    cleanup_chrome_processes(aggressive=True)
+
+                    # Dormir hasta mañana (60 minutos)
+                    logger.info("Fin del día de trading - durmiendo hasta próxima verificación")
+                    time.sleep(60 * 60)  # Dormir por una hora
+                else:
+                    # Esperar el intervalo normal entre ejecuciones
+                    logger.info(f"Próxima ejecución en {ScraperConfig.SCHEDULE_INTERVAL_MINUTES} minutos")
+                    time.sleep(ScraperConfig.SCHEDULE_INTERVAL_MINUTES * 60)
+            else:
+                # No estamos en horas de mercado
+                logger.info("Fuera de horas de mercado - esperando")
+
+                # Realizar limpieza de procesos Chrome por si acaso
+                cleanup_chrome_processes(aggressive=True)
+
+                # Dormir por una hora antes de verificar de nuevo
+                time.sleep(60 * 60)
+
+    except KeyboardInterrupt:
+        logger.info("Scraper detenido por usuario (Keyboard Interrupt)")
+        # Limpiar los procesos de Chrome al salir
+        cleanup_chrome_processes(aggressive=True)
+    except Exception as e:
+        logger.critical(f"Error fatal en scraper: {str(e)}", exc_info=True)
+        # Limpiar los procesos de Chrome al salir por error
+        cleanup_chrome_processes(aggressive=True)
+        sys.exit(1)
+
 
 def run_continuous_scraper():
     """Run the scraper continuously based on the schedule"""
-
     try:
         # Schedule the job to run every X minutes
         schedule.every(ScraperConfig.SCHEDULE_INTERVAL_MINUTES).minutes.do(run_scraping_job)
@@ -668,13 +784,5 @@ def run_continuous_scraper():
 
 
 if __name__ == "__main__":
-    # Print banner
-    print("=" * 80)
-    print(f"AUTOMATED STOCK DATA SCRAPER")
-    print(f"Interval: Every {ScraperConfig.SCHEDULE_INTERVAL_MINUTES} minutes")
-    print(f"Symbols: {', '.join(ScraperConfig.SYMBOLS_TO_SCRAPE)}")
-    print(f"Database: {ScraperConfig.PG_DATABASE} @ {ScraperConfig.PG_HOST}")
-    print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 80)
-
-    run_continuous_scraper()
+    # Cambiado: usar la nueva función para horas de mercado en lugar de la original
+    run_market_hours_scraper()
